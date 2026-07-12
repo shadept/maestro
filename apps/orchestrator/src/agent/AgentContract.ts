@@ -21,6 +21,26 @@ export interface AgentCommand {
   readonly env: Readonly<Record<string, string>>;
 }
 
+/**
+ * Standing orders appended to EVERY worker prompt (first turn and resume).
+ * claude-code rightly never commits unless instructed — without these the
+ * agent finishes its work, reports "Done", and OutboundGit finds zero commits
+ * (the FUR-20 dogfood defect). The instruction must come from Maestro, every
+ * turn. Deliberately not configurable (YAGNI).
+ */
+export const standingOrders = (args: {
+  readonly branchName: string;
+  readonly ticketId: string;
+}): string =>
+  [
+    "--- STANDING ORDERS (Maestro orchestrator) ---",
+    `You are working in a git worktree on branch ${args.branchName} of the project repository.`,
+    `When your work is complete, commit ALL changes to this branch with a clear message referencing ${args.ticketId}.`,
+    "If the repository defines quality gates (CLAUDE.md or similar), run them before committing.",
+    "NEVER push, never create pull requests, never touch git remotes — Maestro publishes your commits with its own credentials after this turn.",
+    "If the task requires no file changes (a pure question), just answer — do not create an empty commit.",
+  ].join("\n");
+
 /** Parses one stream-json line into an event; Option.none for tolerated noise. */
 const parseLine = (line: string): Option.Option<AgentEvent> | "unknown" => {
   const trimmed = line.trim();
@@ -75,7 +95,8 @@ export class AgentContract extends Context.Service<
     /**
      * Builds the worker command for a turn. First turn (no stored session
      * uuid) composes ticket title + body; follow-ups send the comment body
-     * and resume the stored claude session.
+     * and resume the stored claude session. Every prompt ends with the
+     * standing orders (branch, commit duty, no-push rule).
      */
     readonly buildCommand: (args: {
       readonly session: Session;
@@ -105,10 +126,17 @@ export class AgentContract extends Context.Service<
       return {
         buildCommand: ({ session, context, configDir }) => {
           const isFirstTurn = session.claudeSessionUuid === null;
-          const prompt =
+          const task =
             isFirstTurn && context.title !== null
               ? `${context.title}\n\n${context.body}`
               : context.body;
+          // Appended, not prepended: the task reads first (like a user
+          // message), the orders land last where instruction-following is
+          // strongest.
+          const prompt = `${task}\n\n${standingOrders({
+            branchName: session.gitBranch,
+            ticketId: session.ticketReference.externalId,
+          })}`;
           const argv = [
             "claude",
             "-p",

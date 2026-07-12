@@ -4,7 +4,7 @@ import { Session, type SessionId, TaskContext } from "@maestro/domain";
 import { Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { AgentContract, type AgentEvent } from "../../src/agent/AgentContract.ts";
+import { AgentContract, type AgentEvent, standingOrders } from "../../src/agent/AgentContract.ts";
 import { AppConfig } from "../../src/config/AppConfig.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 
@@ -48,6 +48,9 @@ const followupContext = decodeContext({
   deliveryId: "d-2",
   payload: {},
 });
+
+// The orders every prompt must end with, for the test sessions above.
+const STANDING_ORDERS = standingOrders({ branchName: "maestro/FUR-12", ticketId: "FUR-12" });
 
 // Records setClaudeSessionUuid calls without a database.
 const recordingSessionRepo = () => {
@@ -111,7 +114,7 @@ describe("AgentContract.buildCommand", () => {
     expect(command.argv[0]).toBe("claude");
     expect(command.argv).toContain("-p");
     expect(command.argv[2]).toBe(
-      "Add a lint rule\n\nPlease add the no-console lint rule to the repo.",
+      `Add a lint rule\n\nPlease add the no-console lint rule to the repo.\n\n${STANDING_ORDERS}`,
     );
     expect(command.argv).toContain("--output-format");
     expect(command.argv).toContain("stream-json");
@@ -136,7 +139,7 @@ describe("AgentContract.buildCommand", () => {
       }),
       layer,
     );
-    expect(command.argv[2]).toBe("Also apply it to the test files, please.");
+    expect(command.argv[2]).toBe(`Also apply it to the test files, please.\n\n${STANDING_ORDERS}`);
     const resumeIndex = command.argv.indexOf("--resume");
     expect(resumeIndex).toBeGreaterThan(-1);
     expect(command.argv[resumeIndex + 1]).toBe(CLAUDE_UUID);
@@ -159,6 +162,39 @@ describe("AgentContract.buildCommand", () => {
       layer,
     );
     expect(Object.keys(command.env)).toEqual(["CLAUDE_CONFIG_DIR"]);
+  });
+
+  it("standing orders: every prompt ends with them and they carry branch, ticket, and rules", async () => {
+    const { layer } = makeLayer();
+    const [first, resume] = await run(
+      Effect.gen(function* () {
+        const agent = yield* AgentContract;
+        return [
+          agent.buildCommand({
+            session: makeSession(null),
+            context: firstTurnContext,
+            configDir: "/cfg",
+          }),
+          agent.buildCommand({
+            session: makeSession(CLAUDE_UUID),
+            context: followupContext,
+            configDir: "/cfg",
+          }),
+        ];
+      }),
+      layer,
+    );
+    for (const command of [first, resume]) {
+      const prompt = command?.argv[2] ?? "";
+      expect(prompt.endsWith(STANDING_ORDERS)).toBe(true);
+      expect(prompt).toContain("maestro/FUR-12");
+    }
+    expect(STANDING_ORDERS).toContain("branch maestro/FUR-12");
+    expect(STANDING_ORDERS).toContain("referencing FUR-12");
+    expect(STANDING_ORDERS).toContain("commit ALL changes");
+    expect(STANDING_ORDERS).toContain("NEVER push");
+    expect(STANDING_ORDERS).toContain("do not create an empty commit");
+    expect(STANDING_ORDERS).toContain("quality gates");
   });
 });
 

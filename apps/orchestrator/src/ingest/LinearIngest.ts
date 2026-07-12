@@ -8,6 +8,7 @@ import {
   WebhookVerificationError,
 } from "@maestro/domain";
 import { Context, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { MAESTRO_COMMENT_MARKER } from "../callback/format.ts";
 import { AppConfig } from "../config/AppConfig.ts";
 import { DeliveryRepo } from "../db/DeliveryRepo.ts";
 import { ProjectRepo } from "../db/ProjectRepo.ts";
@@ -243,10 +244,23 @@ export class LinearIngest extends Context.Service<
               (error) => new IngestMappingError({ deliveryId, reason: String(error) }),
             ),
           );
-          // Self-trigger guard: the callback worker posts turn results as
-          // comments, and those comments come right back as webhooks. The
-          // configured bot user id (the identity behind MAESTRO_LINEAR_API_TOKEN)
-          // is dropped here, breaking the loop.
+          // Self-trigger guards: the callback worker posts turn results as
+          // comments, and those comments come right back as webhooks.
+          //
+          // Layer 1 (FUR-39): content marker. Every comment format.ts renders
+          // starts with MAESTRO_COMMENT_MARKER, so a body carrying it is ours
+          // regardless of author — essential when MAESTRO_LINEAR_API_TOKEN is
+          // a personal key (single-account setups), where the author id can't
+          // separate Maestro from the human. Layers 2/3 of FUR-39 (turn-rate
+          // circuit breaker, content dedup) are still in the ticket.
+          if (comment.body.startsWith(MAESTRO_COMMENT_MARKER)) {
+            return {
+              _tag: "Ignored",
+              reason: "comment carries the Maestro marker (self-trigger guard)",
+            } satisfies IngestOutcome;
+          }
+          // Layer 2 of the guard: the configured bot user id (the identity
+          // behind MAESTRO_LINEAR_API_TOKEN) is dropped too, when set.
           if (
             Option.isSome(config.linearBotUserId) &&
             comment.userId === config.linearBotUserId.value

@@ -1,0 +1,32 @@
+# Maestro local development stack (FUR-20).
+#
+# Only Postgres runs in compose. The orchestrator itself runs ON THE HOST
+# (`pnpm --filter @maestro/orchestrator dev`): the M1 local-cli WorkerRuntime
+# spawns worker containers through the host `docker` CLI and identity-mounts
+# worktrees at host-absolute paths, so a containerized orchestrator would need
+# docker-socket forwarding and path translation. Containerizing the
+# orchestrator is the M2/K8s story (charts/maestro), not this file.
+#
+# Credentials line up with .env.example:
+#   DATABASE_URL=postgresql://maestro:maestro@localhost:5432/maestro
+services:
+  postgres:
+    image: postgres:18
+    container_name: maestro-postgres
+    environment:
+      POSTGRES_USER: maestro
+      POSTGRES_PASSWORD: maestro
+      POSTGRES_DB: maestro
+    ports:
+      - "5432:5432"
+    volumes:
+      # postgres:18 moved PGDATA under /var/lib/postgresql (not .../data).
+      - maestro-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U maestro -d maestro"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  maestro-pgdata:

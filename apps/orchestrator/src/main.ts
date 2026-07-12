@@ -9,6 +9,7 @@ import { AgentContract } from "./agent/AgentContract.ts";
 import { CallbackWorker } from "./callback/CallbackWorker.ts";
 import { LinearCallback } from "./callback/LinearCallback.ts";
 import { AppConfig } from "./config/AppConfig.ts";
+import { loadDotEnv } from "./config/loadDotEnv.ts";
 import { AuditRepo } from "./db/AuditRepo.ts";
 import { Db } from "./db/Db.ts";
 import { DeliveryRepo } from "./db/DeliveryRepo.ts";
@@ -32,6 +33,11 @@ import { IngestPipeline } from "./ingest/IngestPipeline.ts";
 import { LinearIngest } from "./ingest/LinearIngest.ts";
 import { TurnQueue } from "./queue/TurnQueue.ts";
 import { WorkerRuntime } from "./runtime/WorkerRuntime.ts";
+
+// Seed process.env from optional .env files (dev convenience) before any
+// config resolution. Real environment variables always win; AppConfig below
+// stays the only reader/validator of process.env.
+loadDotEnv();
 
 const LoggerLive = Layer.unwrap(
   Effect.gen(function* () {

@@ -1,5 +1,6 @@
 import { NodeHttpServer } from "@effect/platform-node";
-import { Session, TaskRun } from "@maestro/domain";
+import { SessionWorkspace } from "@maestro/api";
+import { Session, TaskContext, TaskRun } from "@maestro/domain";
 import { Effect, Layer, Schema, type Scope } from "effect";
 import { HttpClient, HttpRouter } from "effect/unstable/http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -54,6 +55,12 @@ const decodeSessions = Schema.decodeUnknownSync(
 const decodeSession = Schema.decodeUnknownSync(Schema.fromJsonString(Schema.toCodecJson(Session)));
 const decodeTaskRuns = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.toCodecJson(Schema.Array(TaskRun))),
+);
+const decodeWorkspace = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.toCodecJson(SessionWorkspace)),
+);
+const decodeContext = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.toCodecJson(TaskContext)),
 );
 
 const setup = (externalId: string) =>
@@ -123,13 +130,35 @@ describe("admin read API", () => {
       }),
     ));
 
+  it("serves the session workspace path and the run's inbound context", () =>
+    run(
+      Effect.gen(function* () {
+        const { session, taskRun } = yield* setup("FUR-17A");
+        const client = yield* HttpClient.HttpClient;
+
+        const workspaceResponse = yield* client.get(`/api/sessions/${session.id}/workspace`, auth);
+        expect(workspaceResponse.status).toBe(200);
+        const workspace = decodeWorkspace(yield* workspaceResponse.text);
+        // AppConfig.layerTest storageRoot + the storage layout convention.
+        expect(workspace.worktreePath).toBe(`/tmp/maestro-test/worktrees/${session.id}`);
+
+        const contextResponse = yield* client.get(`/api/runs/${taskRun.id}/context`, auth);
+        expect(contextResponse.status).toBe(200);
+        const context = decodeContext(yield* contextResponse.text);
+        expect(context.ticket.externalId).toBe("FUR-17A");
+        expect(context.body).toBe("do the thing");
+      }),
+    ));
+
   it("404s unknown sessions and runs", () =>
     run(
       Effect.gen(function* () {
         const client = yield* HttpClient.HttpClient;
         expect((yield* client.get(`/api/sessions/${UNKNOWN_ID}`, auth)).status).toBe(404);
         expect((yield* client.get(`/api/sessions/${UNKNOWN_ID}/runs`, auth)).status).toBe(404);
+        expect((yield* client.get(`/api/sessions/${UNKNOWN_ID}/workspace`, auth)).status).toBe(404);
         expect((yield* client.get(`/api/runs/${UNKNOWN_ID}/logs`, auth)).status).toBe(404);
+        expect((yield* client.get(`/api/runs/${UNKNOWN_ID}/context`, auth)).status).toBe(404);
       }),
     ));
 });

@@ -4,14 +4,21 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {
-    "@maestro/api": "workspace:*"
+    "@maestro/api": "workspace:*",
+    "@maestro/domain": "workspace:*",
+    "effect": "4.0.0-beta.97",
+    "solid-js": "^1.9.14"
   },
   "devDependencies": {
     "typescript": "~7.0.2",
+    "vite": "^8.1.4",
+    "vite-plugin-solid": "^2.11.12",
     "vitest": "^4.1.10"
   }
 }

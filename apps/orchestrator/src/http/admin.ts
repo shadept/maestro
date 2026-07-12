@@ -5,6 +5,7 @@ import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi";
 import { AppConfig } from "../config/AppConfig.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
 import { TaskRunRepo } from "../db/TaskRunRepo.ts";
+import { worktreeDir } from "../storage/paths.ts";
 import { tokenMatches } from "./auth.ts";
 
 // Server side of the @maestro/api AdminApi contract (FUR-16). The contract
@@ -29,6 +30,7 @@ const AdminHandlersLive = HttpApiBuilder.group(AdminApi, "admin", (handlers) =>
   Effect.gen(function* () {
     const sessionRepo = yield* SessionRepo;
     const taskRunRepo = yield* TaskRunRepo;
+    const { storageRoot } = yield* AppConfig;
 
     // Missing entities map to the contract's 404; any other DbError is an
     // infrastructure defect here (500), not part of the API contract.
@@ -53,7 +55,19 @@ const AdminHandlersLive = HttpApiBuilder.group(AdminApi, "admin", (handlers) =>
             .pipe(Effect.andThen(taskRunRepo.listBySession(params.sessionId))),
         ),
       )
-      .handle("getTaskRunLogs", ({ params }) => orNotFound(taskRunRepo.getLogs(params.taskRunId)));
+      .handle("getSessionWorkspace", ({ params }) =>
+        // The worktree path is deterministic from storage root + session id;
+        // probe the session so unknown ids 404 like every other endpoint.
+        orNotFound(
+          sessionRepo
+            .get(params.sessionId)
+            .pipe(Effect.map(() => ({ worktreePath: worktreeDir(storageRoot, params.sessionId) }))),
+        ),
+      )
+      .handle("getTaskRunLogs", ({ params }) => orNotFound(taskRunRepo.getLogs(params.taskRunId)))
+      .handle("getTaskRunContext", ({ params }) =>
+        orNotFound(taskRunRepo.getContext(params.taskRunId)),
+      );
   }),
 );
 

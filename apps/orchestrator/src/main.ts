@@ -22,6 +22,7 @@ import { WorktreeManager } from "./git/WorktreeManager.ts";
 import { AdminApiRoutes } from "./http/admin.ts";
 import { EventsRoutes } from "./http/events.ts";
 import { HealthRoutes } from "./http/health.ts";
+import { StaticRoutes } from "./http/static.ts";
 import { TurnQueue } from "./queue/TurnQueue.ts";
 import { WorkerRuntime } from "./runtime/WorkerRuntime.ts";
 
@@ -83,9 +84,10 @@ const TurnWorkerLive = Layer.effectDiscard(
   }),
 ).pipe(Layer.provide(TurnExecutorLive));
 
-// Health probes, the SSE firehose, and the admin read API (FUR-16). The SSE
-// route and admin handlers pull repos + EventBus from the shared layers below.
-const HttpRoutes = Layer.mergeAll(HealthRoutes, EventsRoutes, AdminApiRoutes);
+// Health probes, the SSE firehose, the admin read API (FUR-16), and the admin
+// UI bundle at `/` (FUR-17). The SSE route and admin handlers pull repos +
+// EventBus from the shared layers below.
+const HttpRoutes = Layer.mergeAll(HealthRoutes, EventsRoutes, AdminApiRoutes, StaticRoutes);
 
 const AppLive = HttpRouter.serve(HttpRoutes).pipe(
   Layer.merge(TurnWorkerLive),

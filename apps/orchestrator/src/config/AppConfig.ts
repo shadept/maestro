@@ -1,7 +1,15 @@
+import { fileURLToPath } from "node:url";
 import { Config, Context, Layer, Option, Redacted } from "effect";
 
 // Every env var the orchestrator understands, validated at boot. Values are
 // resolved once into this service; nothing else reads process.env.
+
+/**
+ * Default admin UI bundle location: the admin-ui workspace's Vite output,
+ * resolved relative to this file so it holds regardless of cwd. Deployments
+ * with a different layout set MAESTRO_ADMIN_UI_DIST.
+ */
+const defaultAdminUiDist = fileURLToPath(new URL("../../../admin-ui/dist", import.meta.url));
 
 const config = {
   databaseUrl: Config.nonEmptyString("DATABASE_URL"),
@@ -46,6 +54,10 @@ const config = {
     Config.withDefault("json" as const),
   ),
   port: Config.port("MAESTRO_PORT").pipe(Config.withDefault(3000)),
+  /** Directory the admin UI static bundle is served from. Missing dir = 404s, never a boot failure. */
+  adminUiDist: Config.nonEmptyString("MAESTRO_ADMIN_UI_DIST").pipe(
+    Config.withDefault(defaultAdminUiDist),
+  ),
 };
 
 export class AppConfig extends Context.Service<
@@ -68,6 +80,7 @@ export class AppConfig extends Context.Service<
     readonly agentApiKey: Option.Option<Redacted.Redacted>;
     readonly logFormat: "json" | "pretty";
     readonly port: number;
+    readonly adminUiDist: string;
   }
 >()("maestro/config/AppConfig") {
   static readonly layer = Layer.effect(AppConfig, Config.all(config));
@@ -92,6 +105,7 @@ export class AppConfig extends Context.Service<
       agentApiKey: Option.none(),
       logFormat: "pretty",
       port: 0,
+      adminUiDist: "/tmp/maestro-test/admin-ui-dist",
       ...overrides,
     });
 }

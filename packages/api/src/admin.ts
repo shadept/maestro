@@ -1,4 +1,4 @@
-import { Session, SessionId, TaskRun, TaskRunId } from "@maestro/domain";
+import { Session, SessionId, TaskContext, TaskRun, TaskRunId } from "@maestro/domain";
 import { Schema } from "effect";
 import {
   HttpApi,
@@ -29,6 +29,16 @@ export class AdminAuth extends HttpApiMiddleware.Service<AdminAuth>()("maestro/a
 }) {}
 
 /**
+ * Server-derived workspace facts for a session. The worktree path lives under
+ * the orchestrator's storage root — only the server knows it, so it travels
+ * via the API instead of being guessed client-side.
+ */
+export const SessionWorkspace = Schema.Struct({
+  worktreePath: Schema.NonEmptyString,
+});
+export type SessionWorkspace = typeof SessionWorkspace.Type;
+
+/**
  * NOTE: `GET /api/events` (SSE) is deliberately NOT part of this contract —
  * it is a long-lived text/event-stream endpoint served by a raw route. Its
  * payload contract is `MaestroEventFromJsonString` in `events.ts`.
@@ -52,9 +62,26 @@ export const AdminApi = HttpApi.make("maestro-admin")
         }),
       )
       .add(
+        HttpApiEndpoint.get("getSessionWorkspace", "/sessions/:sessionId/workspace", {
+          params: { sessionId: SessionId },
+          success: SessionWorkspace,
+          error: HttpApiError.NotFound,
+        }),
+      )
+      .add(
         HttpApiEndpoint.get("getTaskRunLogs", "/runs/:taskRunId/logs", {
           params: { taskRunId: TaskRunId },
           success: Schema.String,
+          error: HttpApiError.NotFound,
+        }),
+      )
+      .add(
+        // The normalized inbound payload that triggered the turn (M1.13
+        // session-detail view). TaskContext.payload carries the original
+        // platform payload opaquely.
+        HttpApiEndpoint.get("getTaskRunContext", "/runs/:taskRunId/context", {
+          params: { taskRunId: TaskRunId },
+          success: TaskContext,
           error: HttpApiError.NotFound,
         }),
       ),

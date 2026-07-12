@@ -1,0 +1,259 @@
+/* Minimal dark theme — deliberately no component library (FUR-17). */
+
+:root {
+  color-scheme: dark;
+  --bg: #14161a;
+  --surface: #1d2026;
+  --border: #2c313a;
+  --text: #d6dae2;
+  --muted: #7d8590;
+  --accent: #6ca4f5;
+  --ok: #3fb26f;
+  --warn: #d9a03f;
+  --bad: #e0605e;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font:
+    14px / 1.5 ui-sans-serif,
+    system-ui,
+    sans-serif;
+}
+
+code,
+pre {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+main {
+  padding: 16px 24px;
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.error {
+  color: var(--bad);
+}
+
+/* status bar */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+}
+
+.status-bar .brand {
+  font-weight: 700;
+  color: var(--text);
+  margin-right: 8px;
+}
+
+/* chips */
+.chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.chip.ok,
+.connection-open,
+.state-WARM_IDLE,
+.state-COMPLETED {
+  color: var(--ok);
+  border-color: var(--ok);
+}
+
+.chip.bad,
+.state-FAILED,
+.state-TERMINATED {
+  color: var(--bad);
+  border-color: var(--bad);
+}
+
+.connection-connecting,
+.connection-reconnecting,
+.state-PENDING,
+.state-PROVISIONING,
+.state-DORMANT_SAVED {
+  color: var(--warn);
+  border-color: var(--warn);
+}
+
+.state-EXECUTING {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* token gate */
+.token-gate {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
+
+.token-gate form {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 28px;
+  width: 340px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.token-gate h1 {
+  margin: 0;
+}
+
+.token-gate p {
+  margin: 0;
+  color: var(--muted);
+}
+
+input,
+button {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+}
+
+button {
+  cursor: pointer;
+  background: var(--accent);
+  color: #10131a;
+  font-weight: 600;
+  border: none;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* session detail */
+.facts {
+  display: grid;
+  grid-template-columns: 140px 1fr;
+  gap: 4px 16px;
+  margin: 16px 0;
+}
+
+.facts dt {
+  color: var(--muted);
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.run {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 8px;
+  background: var(--surface);
+}
+
+.run-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.run-header .spacer {
+  flex: 1;
+}
+
+.run-body {
+  padding: 0 12px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.run-body h4 {
+  margin: 12px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
+pre.result,
+pre.payload {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 240px;
+  overflow: auto;
+}
+
+pre.log-tail {
+  background: #0d0f12;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

@@ -17,15 +17,27 @@ export const buildFakeAgentImage = (): void => {
 };
 
 /**
- * Workers run as container root, so on Linux hosts the mounts accumulate
- * root-owned files the test process cannot delete — clean the storage tree
- * with the same runtime before the host-side rm.
+ * Workers run as uid 1000, so on Linux hosts the mounts can accumulate files
+ * the test process (a different uid) cannot delete — clean the storage tree
+ * with the same runtime (explicitly as root, overriding the image's non-root
+ * USER) before the host-side rm.
  */
 export const cleanStorageViaContainer = (root: string, storageRoot: string): void => {
   try {
     execFileSync(
       "docker",
-      ["run", "--rm", "-v", `${root}:${root}`, FAKE_AGENT_IMAGE, "rm", "-rf", storageRoot],
+      [
+        "run",
+        "--rm",
+        "-u",
+        "0",
+        "-v",
+        `${root}:${root}`,
+        FAKE_AGENT_IMAGE,
+        "rm",
+        "-rf",
+        storageRoot,
+      ],
       { stdio: "pipe" },
     );
   } catch {

@@ -7,15 +7,21 @@
     "dev": "tsx watch src/main.ts",
     "start": "tsx src/main.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "@maestro/api": "workspace:*",
     "@maestro/domain": "workspace:*",
-    "effect": "4.0.0-beta.97"
+    "drizzle-orm": "^0.45.2",
+    "effect": "4.0.0-beta.97",
+    "pg": "^8.22.0"
   },
   "devDependencies": {
+    "@testcontainers/postgresql": "^12.0.4",
     "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
+    "drizzle-kit": "^0.31.10",
     "tsx": "^4.23.0",
     "typescript": "~5.9.3",
     "vitest": "^4.1.10"

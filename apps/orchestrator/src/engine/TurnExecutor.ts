@@ -251,16 +251,32 @@ export class TurnExecutor extends Context.Service<
         const context = yield* taskRunRepo.getContext(job.taskRunId);
 
         yield* taskRunRepo.transition(job.taskRunId, "PROVISIONING");
-        // Private repos: the orchestrator token authenticates the clone via
-        // per-invocation GIT_CONFIG_* env (FUR-10 mechanism — never argv,
+        // Private repos: the orchestrator token authenticates clone + fetch
+        // via per-invocation GIT_CONFIG_* env (FUR-10 mechanism — never argv,
         // never stored config). Absent token = anonymous, public repos work.
-        const cachePath = yield* gitCache.ensureClone(
-          project,
-          forgeCredentials(config.githubToken),
-        );
+        const credentials = forgeCredentials(config.githubToken);
+        const cachePath = yield* gitCache.ensureClone(project, credentials);
         if (project.localCachePath === null) {
           yield* projectRepo.setLocalCachePath(project.id, cachePath);
         }
+        // Frozen-cache fix: refresh the base from origin so a first provision
+        // cuts the session branch from origin's CURRENT base, not the
+        // clone-time snapshot. Runs before every provision (not only branch
+        // creation): only refs/heads/<base> moves, so existing session
+        // branches — including this session's — are untouched, and the
+        // branch-lost recovery path stays as fresh as a first provision.
+        // DEGRADATION: the clone exists at this point, so an unreachable
+        // origin logs a warning and the turn proceeds on the cached (possibly
+        // stale) base — resilience outranks freshness; a later publish will
+        // surface a genuinely dead remote anyway.
+        yield* gitCache.fetchBase(project, credentials).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("TurnExecutor: base fetch failed; provisioning from cached base", {
+              projectId: project.id,
+              error: String(error),
+            }),
+          ),
+        );
         const paths = yield* worktreeManager.provision({ session, project });
         const configDir = sessionConfigDir(config.storageRoot, session.id);
         yield* Effect.promise(() => mkdir(configDir, { recursive: true }));

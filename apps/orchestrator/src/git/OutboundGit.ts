@@ -100,8 +100,7 @@ export class OutboundGit extends Context.Service<
             ...(credentials !== undefined && { credentials }),
           };
           // read-only, and RepoLocks is not reentrant — resolve before locking
-          const baseBranch =
-            project.gitConventions.baseBranch ?? (yield* gitCache.defaultBranch(project));
+          const baseBranch = yield* gitCache.baseBranch(project);
 
           // Locked: push writes local refs too — the mirror fetch refspec maps
           // the pushed branch's tracking ref back onto refs/heads/*, and git

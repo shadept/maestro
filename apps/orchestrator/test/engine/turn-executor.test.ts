@@ -1,5 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ForgeApiError, type TaskContext, type TaskRun, type TaskRunState } from "@maestro/domain";
@@ -302,6 +311,14 @@ describe("TurnExecutor", () => {
     for (const invocation of cloneInvocations) {
       expect(invocation).toContain(`GIT_CONFIG_VALUE_0=${expectedHeader}`);
     }
+    // frozen-cache fix: the base was refreshed from origin before provisioning
+    // — base-only refspec (never the all-heads mirror), same credential path
+    const fetchInvocations = invocations.filter((block) => block.includes("argv: fetch"));
+    expect(fetchInvocations.length).toBeGreaterThan(0);
+    for (const invocation of fetchInvocations) {
+      expect(invocation).toContain("+refs/heads/main:refs/heads/main");
+      expect(invocation).toContain(`GIT_CONFIG_VALUE_0=${expectedHeader}`);
+    }
     // the raw token never crossed a git process boundary in the clear
     expect(invocations.join("")).not.toContain(ORCHESTRATOR_TOKEN);
     // and never landed at rest in the cached clone's config
@@ -471,6 +488,61 @@ describe("TurnExecutor", () => {
     expect(settled.outbox).toHaveLength(1);
     const payload = settled.outbox[0]?.payload as TurnOutcomePayload;
     expect(payload.cause).toBe("TIMEOUT");
+  }, 60_000);
+
+  it("origin unreachable on a later turn: base fetch degrades to a warning, agent still executes", async () => {
+    const { session, taskRun } = await run(setupTurn("FUR-107", "Please do the work."));
+
+    // turn 1 with origin reachable: clone + worktree + push all succeed
+    await run(
+      Effect.gen(function* () {
+        const executor = yield* TurnExecutor;
+        yield* executor.execute({ taskRunId: taskRun.id, sessionId: session.id });
+        const taskRunRepo = yield* TaskRunRepo;
+        expect((yield* taskRunRepo.get(taskRun.id)).state).toBe("COMPLETED");
+      }),
+    );
+
+    // origin goes dark; the clone and worktree survive
+    await rename(originDir, `${originDir}.down`);
+    try {
+      const taskRun2 = await run(
+        Effect.gen(function* () {
+          const taskRunRepo = yield* TaskRunRepo;
+          return yield* taskRunRepo.create(session.id, taskContext("FUR-107", "MODE=NOCOMMIT"));
+        }),
+      );
+      // publish genuinely needs the remote, so the turn still settles FAILED
+      // at the END — the frozen-cache degradation contract is that the base
+      // fetch failure alone must never abort PROVISIONING.
+      await run(
+        Effect.gen(function* () {
+          const executor = yield* TurnExecutor;
+          yield* executor
+            .execute({ taskRunId: taskRun2.id, sessionId: session.id })
+            .pipe(Effect.ignore);
+        }),
+      );
+      const settled = await run(
+        Effect.gen(function* () {
+          const taskRunRepo = yield* TaskRunRepo;
+          return {
+            taskRun: yield* taskRunRepo.get(taskRun2.id),
+            outbox: yield* outboxEntryFor(taskRun2),
+          };
+        }),
+      );
+      // provisioning proceeded on the cached base and the agent actually ran:
+      // the EXECUTING deadline was set and the agent's final text survived
+      expect(settled.taskRun.expiresAt).toBeInstanceOf(Date);
+      expect(settled.taskRun.resultText).toBe("Answered without changes.");
+      // the only failure is the publish step's dead remote, not the fetch
+      expect(settled.taskRun.state).toBe("FAILED");
+      const payload = settled.outbox[0]?.payload as TurnOutcomePayload;
+      expect(payload.summary).toContain("publishing failed");
+    } finally {
+      await rename(`${originDir}.down`, originDir);
+    }
   }, 60_000);
 
   it("replayed job for a settled turn is a no-op (no second agent pass)", async () => {

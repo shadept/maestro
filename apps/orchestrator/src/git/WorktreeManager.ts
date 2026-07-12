@@ -97,9 +97,7 @@ export class WorktreeManager extends Context.Service<
                   cwd: paths.gitDir,
                 });
               } else {
-                const base =
-                  args.project.gitConventions.baseBranch ??
-                  (yield* gitCache.defaultBranch(args.project));
+                const base = yield* gitCache.baseBranch(args.project);
                 yield* runGit(["worktree", "add", "-b", branch, paths.worktreePath, base], {
                   cwd: paths.gitDir,
                 });

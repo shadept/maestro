@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Project, Session } from "@maestro/domain";
@@ -187,36 +187,105 @@ describe("GitCache + WorktreeManager", () => {
     expect(config).toContain(`file://${originDir}`);
   });
 
-  it("fetch picks up new commits from origin", async () => {
-    await writeFile(path.join(originDir, "update.txt"), "more\n");
-    git(originDir, "add", ".");
-    git(originDir, "commit", "-m", "update");
-    const originHead = git(originDir, "rev-parse", "main");
-
-    await run(
-      Effect.gen(function* () {
-        const cache = yield* GitCache;
-        yield* cache.fetch(project, { token: Redacted.make("SUPER-SECRET-TOKEN") });
-      }),
-    );
-
+  it("fetchBase: origin advances → new provisions branch from the fresh base, session branches untouched", async () => {
     const cachePath = await run(
       Effect.gen(function* () {
         const cache = yield* GitCache;
         return yield* cache.ensureClone(project);
       }),
     );
+
+    // session B (from the lifecycle test) is still checked out in a linked
+    // worktree; give origin a same-named branch at a diverged tip — the exact
+    // shape that makes a mirror fetch fatal ("refusing to fetch into branch
+    // ... checked out at") and a forced all-heads update dangerous.
+    const sessionBranchSha = git(cachePath, "rev-parse", "refs/heads/maestro/FUR-2");
+    await writeFile(path.join(originDir, "update.txt"), "more\n");
+    git(originDir, "add", ".");
+    git(originDir, "commit", "-m", "update");
+    const originHead = git(originDir, "rev-parse", "main");
+    git(originDir, "branch", "maestro/FUR-2", "main");
+
+    await run(
+      Effect.gen(function* () {
+        const cache = yield* GitCache;
+        yield* cache.fetchBase(project, { token: Redacted.make("SUPER-SECRET-TOKEN") });
+      }),
+    );
+
+    // the base moved; the session branch did not (a mirror fetch would have
+    // failed outright or force-moved it to origin's tip)
     expect(git(cachePath, "rev-parse", "main")).toBe(originHead);
+    expect(git(cachePath, "rev-parse", "refs/heads/maestro/FUR-2")).toBe(sessionBranchSha);
+
+    // a session provisioned AFTER the fetch branches from origin's current
+    // base — the frozen-cache defect (stale clone-time base) stays fixed
+    const sessionC = makeSession(
+      3,
+      branchNameFor({ source: "linear", externalId: "FUR-3" }, project),
+    );
+    const pathsC = await run(
+      Effect.gen(function* () {
+        const manager = yield* WorktreeManager;
+        return yield* manager.provision({ session: sessionC, project });
+      }),
+    );
+    expect(git(pathsC.worktreePath, "rev-parse", "HEAD")).toBe(originHead);
+    expect(await readFile(path.join(pathsC.worktreePath, "update.txt"), "utf8")).toBe("more\n");
+
+    // credentials offered to the fetch never persist at rest
+    const config = await readFile(path.join(cachePath, "config"), "utf8");
+    expect(config).not.toContain("SUPER-SECRET-TOKEN");
+    expect(config.toLowerCase()).not.toContain("authorization");
   });
 
-  it("reports default branch and applies branch pattern overrides", async () => {
+  it("fetchBase on an unreachable origin fails typed; the cached clone stays usable", async () => {
+    const moved = `${originDir}.down`;
+    await rename(originDir, moved);
+    try {
+      const error = await run(
+        Effect.gen(function* () {
+          const cache = yield* GitCache;
+          return yield* cache.fetchBase(project).pipe(Effect.flip);
+        }),
+      );
+      expect(error._tag).toBe("GitCommandError");
+
+      // degradation contract (TurnExecutor catches this failure and proceeds):
+      // provisioning from the cached, last-known base still works
+      const sessionD = makeSession(
+        4,
+        branchNameFor({ source: "linear", externalId: "FUR-4" }, project),
+      );
+      const pathsD = await run(
+        Effect.gen(function* () {
+          const manager = yield* WorktreeManager;
+          return yield* manager.provision({ session: sessionD, project });
+        }),
+      );
+      expect(await readFile(path.join(pathsD.worktreePath, "README.md"), "utf8")).toBe("hello\n");
+    } finally {
+      await rename(moved, originDir);
+    }
+  });
+
+  it("resolves the base branch (override wins, else default) and applies branch pattern overrides", async () => {
     const branch = await run(
       Effect.gen(function* () {
         const cache = yield* GitCache;
-        return yield* cache.defaultBranch(project);
+        return yield* cache.baseBranch(project);
       }),
     );
     expect(branch).toBe("main");
+
+    const overridden = decodeProject({ ...project, gitConventions: { baseBranch: "develop" } });
+    const overriddenBase = await run(
+      Effect.gen(function* () {
+        const cache = yield* GitCache;
+        return yield* cache.baseBranch(overridden);
+      }),
+    );
+    expect(overriddenBase).toBe("develop");
 
     const custom = decodeProject({
       ...project,

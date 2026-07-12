@@ -15,6 +15,19 @@ export class StateTransitionError extends Schema.TaggedErrorClass<StateTransitio
   },
 ) {}
 
+export class DbQueryError extends Schema.TaggedErrorClass<DbQueryError>()("DbQueryError", {
+  /** The repo method that failed, e.g. "SessionRepo.create". */
+  operation: Schema.String,
+  message: Schema.String,
+}) {}
+
+export class EntityNotFoundError extends Schema.TaggedErrorClass<EntityNotFoundError>()(
+  "EntityNotFoundError",
+  { entity: Schema.String, entityId: Schema.String },
+) {}
+
+export type DbError = DbQueryError | EntityNotFoundError | StateTransitionError;
+
 // ── git area ───────────────────────────────────────────────────────────────
 
 export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()("GitCommandError", {

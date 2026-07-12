@@ -214,6 +214,43 @@ describe("SessionRepo", () => {
     expect(withPr.prUrl).toBe("https://github.com/shadept/maestro/pull/41");
   });
 
+  it("pause is set-once with a race-safe newlyPaused flag; resume clears it (FUR-39)", async () => {
+    const project = await run(makeProject);
+    const session = await run(makeSession(project));
+    expect(session.pausedAt).toBeNull();
+
+    const first = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepo;
+        return yield* repo.pause(session.id);
+      }),
+    );
+    expect(first.newlyPaused).toBe(true);
+    expect(first.session.pausedAt).toBeInstanceOf(Date);
+
+    // a second trip is silent: same timestamp, newlyPaused false
+    const second = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepo;
+        return yield* repo.pause(session.id);
+      }),
+    );
+    expect(second.newlyPaused).toBe(false);
+    expect(second.session.pausedAt).toEqual(first.session.pausedAt);
+
+    // resume clears the marker (idempotent), and a resumed session can trip again
+    const again = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepo;
+        const resumed = yield* repo.resume(session.id);
+        expect(resumed.pausedAt).toBeNull();
+        yield* repo.resume(session.id); // no-op
+        return yield* repo.pause(session.id);
+      }),
+    );
+    expect(again.newlyPaused).toBe(true);
+  });
+
   it("concurrent conflicting transitions: exactly one wins", async () => {
     const project = await run(makeProject);
     const session = await run(makeSession(project));
@@ -313,6 +350,45 @@ describe("TaskRunRepo", () => {
     const results = await Promise.all([attempt(), attempt(), attempt()]);
     expect(results.filter(Exit.isSuccess)).toHaveLength(1);
     expect(results.filter(Exit.isFailure)).toHaveLength(2);
+  });
+
+  it("countConsecutiveFailures: trailing failures only, success resets, CANCELLED is skipped (FUR-39)", async () => {
+    const project = await run(makeProject);
+    const session = await run(makeSession(project));
+
+    const settle = (to: "COMPLETED" | "FAILED", cause?: "ERROR" | "CANCELLED") =>
+      Effect.gen(function* () {
+        const repo = yield* TaskRunRepo;
+        const created = yield* repo.create(session.id, taskContext(session));
+        yield* repo.transition(created.id, "PROVISIONING");
+        yield* repo.transition(created.id, "EXECUTING");
+        yield* repo.transition(created.id, to, cause !== undefined ? { cause } : {});
+      });
+
+    const count = Effect.gen(function* () {
+      const repo = yield* TaskRunRepo;
+      return yield* repo.countConsecutiveFailures(session.id);
+    });
+
+    expect(await run(count)).toBe(0);
+
+    await run(settle("FAILED", "ERROR"));
+    await run(settle("FAILED", "ERROR"));
+    expect(await run(count)).toBe(2);
+
+    // a success resets the streak
+    await run(settle("COMPLETED"));
+    expect(await run(count)).toBe(0);
+
+    // an unsettled (PENDING) run neither counts nor breaks the streak
+    await run(settle("FAILED", "ERROR"));
+    await run(makeRun(session));
+    expect(await run(count)).toBe(1);
+
+    // CANCELLED says nothing about agent health: skipped, not a reset
+    await run(settle("FAILED", "CANCELLED"));
+    await run(settle("FAILED", "ERROR"));
+    expect(await run(count)).toBe(2);
   });
 
   it("appendLogs accumulates chunks in order", async () => {

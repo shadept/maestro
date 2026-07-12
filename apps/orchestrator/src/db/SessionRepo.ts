@@ -11,7 +11,7 @@ import {
   sessionTransitions,
   type TicketReference,
 } from "@maestro/domain";
-import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { Context, Effect, Layer, Option, Schema } from "effect";
 import { EventBus } from "../events/EventBus.ts";
 import { Db } from "./Db.ts";
@@ -30,6 +30,7 @@ const toSession = (row: typeof sessions.$inferSelect): Session =>
     prUrl: row.prUrl,
     state: row.state,
     terminationRequestedAt: row.terminationRequestedAt,
+    pausedAt: row.pausedAt,
     createdAt: row.createdAt,
     lastActivityAt: row.lastActivityAt,
   });
@@ -65,6 +66,17 @@ export class SessionRepo extends Context.Service<
      * settles (M1.15).
      */
     readonly requestTermination: (id: SessionId) => Effect.Effect<Session, DbError>;
+    /**
+     * Trips the failure circuit breaker (FUR-39): sets pausedAt once.
+     * `newlyPaused` reports whether THIS call flipped the marker — the
+     * caller's exactly-once hook for the paused audit entry + outbox message
+     * (a concurrent/replayed trip sees false and stays silent).
+     */
+    readonly pause: (
+      id: SessionId,
+    ) => Effect.Effect<{ session: Session; newlyPaused: boolean }, DbError>;
+    /** Clears the circuit breaker (manual human resume). Idempotent. */
+    readonly resume: (id: SessionId) => Effect.Effect<Session, DbError>;
     readonly setClaudeSessionUuid: (id: SessionId, uuid: string) => Effect.Effect<Session, DbError>;
     /** Records the forge PR opened for this session's branch (first outbound publish). */
     readonly setPullRequest: (
@@ -186,6 +198,40 @@ export class SessionRepo extends Context.Service<
           // published like a transition: "terminating" is a UI-relevant change
           yield* publishChanged(session);
           return session;
+        }),
+        pause: Effect.fn("SessionRepo.pause")(function* (id: SessionId) {
+          // Set-once via the WHERE guard: only the call that finds the marker
+          // unset flips it, so `newlyPaused` is race-safe inside the statement.
+          const rows = yield* dbTry("SessionRepo.pause")(() =>
+            client
+              .update(sessions)
+              .set({ pausedAt: new Date() })
+              .where(and(eq(sessions.id, id), isNull(sessions.pausedAt)))
+              .returning(),
+          );
+          if (rows[0]) {
+            const session = toSession(rows[0]);
+            yield* publishChanged(session);
+            return { session, newlyPaused: true };
+          }
+          const current = toSession(yield* getById("SessionRepo.pause")(id));
+          return { session: current, newlyPaused: false };
+        }),
+        resume: Effect.fn("SessionRepo.resume")(function* (id: SessionId) {
+          const rows = yield* dbTry("SessionRepo.resume")(() =>
+            client
+              .update(sessions)
+              .set({ pausedAt: null })
+              .where(and(eq(sessions.id, id), isNotNull(sessions.pausedAt)))
+              .returning(),
+          );
+          if (rows[0]) {
+            const session = toSession(rows[0]);
+            yield* publishChanged(session);
+            return session;
+          }
+          // already resumed (or never paused) — converge without an event
+          return toSession(yield* getById("SessionRepo.resume")(id));
         }),
         setClaudeSessionUuid: Effect.fn("SessionRepo.setClaudeSessionUuid")(function* (
           id: SessionId,

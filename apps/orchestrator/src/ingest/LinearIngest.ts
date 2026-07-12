@@ -224,7 +224,18 @@ export class LinearIngest extends Context.Service<
             deliveryId,
             payload,
           };
-          return yield* pipeline.startTask({ project: project.value, context });
+          // Resume signal (FUR-39): only an update whose label set actually
+          // changed (updatedFrom carries labelIds — same evidence pattern as
+          // the terminal stateId check above) counts as "the human re-applied
+          // the trigger label". An unrelated issue edit with the label still
+          // present must NOT silently resume a breaker-paused session.
+          const labelsChanged =
+            envelope.action === "update" && hasKey(envelope.updatedFrom, "labelIds");
+          return yield* pipeline.startTask({
+            project: project.value,
+            context,
+            resumeSignal: labelsChanged,
+          });
         });
 
       const mapCommentEvent = (
@@ -251,8 +262,10 @@ export class LinearIngest extends Context.Service<
           // starts with MAESTRO_COMMENT_MARKER, so a body carrying it is ours
           // regardless of author — essential when MAESTRO_LINEAR_API_TOKEN is
           // a personal key (single-account setups), where the author id can't
-          // separate Maestro from the human. Layers 2/3 of FUR-39 (turn-rate
-          // circuit breaker, content dedup) are still in the ticket.
+          // separate Maestro from the human. The other FUR-39 layers live
+          // elsewhere: the consecutive-failure circuit breaker in
+          // TurnExecutor/IngestPipeline, failure-comment dedup in the outbox
+          // idempotency key (TurnExecutor.outcomeIdempotencyKey).
           if (comment.body.startsWith(MAESTRO_COMMENT_MARKER)) {
             return {
               _tag: "Ignored",

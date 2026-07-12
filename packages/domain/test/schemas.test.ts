@@ -66,6 +66,7 @@ describe("Session", () => {
     prNumber: null,
     prUrl: null,
     terminationRequestedAt: null,
+    pausedAt: null,
     state: "WARM_IDLE",
     createdAt: new Date("2026-07-12T00:00:00Z"),
     lastActivityAt: new Date("2026-07-12T01:00:00Z"),
@@ -87,6 +88,11 @@ describe("Session", () => {
       terminationRequestedAt: new Date("2026-07-12T02:00:00Z"),
     });
     expect(marked.terminationRequestedAt).toEqual(new Date("2026-07-12T02:00:00Z"));
+  });
+
+  it("accepts a persisted circuit-breaker pause marker (FUR-39)", () => {
+    const paused = roundTrip(Session, { ...valid, pausedAt: new Date("2026-07-12T03:00:00Z") });
+    expect(paused.pausedAt).toEqual(new Date("2026-07-12T03:00:00Z"));
   });
 
   it("accepts stored PR coordinates and rejects a non-positive PR number", () => {

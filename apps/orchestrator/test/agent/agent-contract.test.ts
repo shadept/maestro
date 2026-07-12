@@ -24,6 +24,7 @@ const makeSession = (claudeSessionUuid: string | null): Session =>
     prNumber: null,
     prUrl: null,
     terminationRequestedAt: null,
+    pausedAt: null,
     state: "WARM_IDLE",
     createdAt: new Date(),
     lastActivityAt: new Date(),

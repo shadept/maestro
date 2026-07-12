@@ -13,8 +13,14 @@ import type { TurnOutcomePayload } from "../engine/TurnExecutor.ts";
  */
 export const MAESTRO_COMMENT_MARKER = "**Maestro** —";
 
-/** The ticket comment body for a settled turn. */
+/** The ticket comment body for a settled turn (or a circuit-breaker pause). */
 export const formatTurnComment = (outcome: TurnOutcomePayload): string => {
+  if (outcome.kind === "session-paused") {
+    // The summary IS the message (built at the trip site, which knows the
+    // threshold and the resume mechanism); the marker still leads so the
+    // FUR-39 layer-1 ingest guard catches the echo.
+    return `${MAESTRO_COMMENT_MARKER} ${outcome.summary.trim()}`;
+  }
   const header =
     outcome.kind === "turn-completed"
       ? `${MAESTRO_COMMENT_MARKER} turn completed.`

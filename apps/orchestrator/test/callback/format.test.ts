@@ -42,4 +42,15 @@ describe("formatTurnComment", () => {
     const body = formatTurnComment(outcome({ summary: "" }));
     expect(body.startsWith(MAESTRO_COMMENT_MARKER)).toBe(true);
   });
+
+  it("session-paused comments start with the marker and carry the summary verbatim", () => {
+    const body = formatTurnComment(
+      outcome({
+        kind: "session-paused",
+        summary: "Maestro paused this session after 3 consecutive failures.",
+      }),
+    );
+    expect(body.startsWith(MAESTRO_COMMENT_MARKER)).toBe(true);
+    expect(body).toContain("paused this session after 3 consecutive failures");
+  });
 });

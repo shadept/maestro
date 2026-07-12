@@ -325,6 +325,96 @@ describe("POST /api/webhooks/linear", () => {
     expect(response.json.outcome).toBe("Ignored");
   });
 
+  it("a paused session ignores genuine human comments until the label resumes it (FUR-39)", async () => {
+    // Fresh ticket on the registered team; pause is set directly (the breaker
+    // trip itself is executor territory — see the circuit-breaker suite).
+    const TICKET_P = "FUR-88";
+    const label = withData(loadLinearFixture("issue-labeled"), { identifier: TICKET_P });
+    const started = await run(post(signLinearDelivery(label)));
+    expect(started.json.outcome).toBe("SessionStarted");
+
+    const paused = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionRepo;
+        const session = Option.getOrThrow(
+          yield* sessions.findActiveByTicket({ source: "linear", externalId: TICKET_P }),
+        );
+        return yield* sessions.pause(session.id);
+      }),
+    );
+    expect(paused.newlyPaused).toBe(true);
+    const session = paused.session;
+
+    // a genuine human comment (no marker, no bot id) does NOT queue a turn
+    const comment = withData(loadLinearFixture("comment-created"), {
+      body: "Any progress?",
+      issue: {
+        id: "9a3b5f80-1e2a-4b0e-9f3d-2c7a8f1e6b01",
+        identifier: TICKET_P,
+        title: "Fix the flux capacitor",
+      },
+    });
+    const ignored = await run(post(signLinearDelivery(comment)), layerWithoutBotUserId);
+    expect(ignored.status).toBe(200);
+    expect(ignored.json.outcome).toBe("Ignored");
+    expect(String(ignored.json.reason)).toContain("paused");
+    expect(await run(runsOf(session))).toHaveLength(1);
+
+    // an issue update whose label set did NOT change must not silently resume
+    const unrelatedUpdate = {
+      ...withData(loadLinearFixture("issue-labeled"), { identifier: TICKET_P }),
+      updatedFrom: { updatedAt: "2026-07-10T11:59:00.000Z", title: "Old title" },
+    };
+    const noResume = await run(post(signLinearDelivery(unrelatedUpdate)));
+    expect(noResume.status).toBe(200);
+    expect(noResume.json.outcome).toBe("Ignored");
+    expect(await run(runsOf(session))).toHaveLength(1);
+
+    // re-applying the trigger label (updatedFrom carries labelIds) resumes
+    // the session and queues a fresh turn from the ticket
+    const relabel = withData(loadLinearFixture("issue-labeled"), { identifier: TICKET_P });
+    const resumed = await run(post(signLinearDelivery(relabel)));
+    expect(resumed.status).toBe(200);
+    expect(resumed.json.outcome).toBe("SessionResumed");
+
+    const after = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionRepo;
+        return yield* sessions.get(session.id);
+      }),
+    );
+    expect(after.pausedAt).toBeNull();
+    const runs = await run(runsOf(session));
+    expect(runs).toHaveLength(2);
+    expect(runs[1]?.state).toBe("PENDING");
+
+    // the human action is audited
+    const audits = await run(
+      Effect.gen(function* () {
+        const audit = yield* AuditRepo;
+        return yield* audit.list;
+      }),
+    );
+    expect(
+      audits.some(
+        (a) => a.action === "session-resumed" && a.targetEntity === `session:${session.id}`,
+      ),
+    ).toBe(true);
+
+    // ...and the resumed session accepts comments again
+    const followUp = withData(loadLinearFixture("comment-created"), {
+      body: "Welcome back.",
+      issue: {
+        id: "9a3b5f80-1e2a-4b0e-9f3d-2c7a8f1e6b01",
+        identifier: TICKET_P,
+        title: "Fix the flux capacitor",
+      },
+    });
+    const queued = await run(post(signLinearDelivery(followUp)));
+    expect(queued.json.outcome).toBe("TurnQueued");
+    expect(await run(runsOf(session))).toHaveLength(3);
+  });
+
   it("issue moved to done terminates the session and cancels its queued turns", async () => {
     // FUR-19: the terminal signal is acted on, so capture the session first.
     const session = Option.getOrThrow(await run(activeSession));

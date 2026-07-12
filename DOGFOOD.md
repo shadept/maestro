@@ -122,3 +122,12 @@ open question needs. Fallback: set `ANTHROPIC_API_KEY` instead.
 - Result comment never lands but the PR exists: `MAESTRO_LINEAR_API_TOKEN`
   missing/invalid — the outbox retries with backoff, so fixing the token and
   restarting delivers the pending comment.
+- "Maestro — paused this session after 3 consecutive failures" comment
+  (FUR-39 circuit breaker): the session stops accepting comment-triggered
+  turns after 3 consecutive FAILED turns with no success in between.
+  Diagnose via the failure comment / run logs, then resume by RE-APPLYING
+  the trigger label to the issue (remove `maestro`, add it back) — that
+  clears the breaker and queues a fresh turn from the ticket. One more
+  failure right after a resume re-pauses immediately; only a completed turn
+  resets the streak. Repeated identical failure comments are deduped: the
+  same failure text posts once per session until the text changes.

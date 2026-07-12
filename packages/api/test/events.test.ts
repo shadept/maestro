@@ -27,6 +27,7 @@ const session: Session = {
   prNumber: 7,
   prUrl: "https://github.com/acme/repo/pull/7",
   terminationRequestedAt: null,
+  pausedAt: null,
   state: "WARM_IDLE",
   createdAt: new Date("2026-07-12T10:00:00.000Z"),
   lastActivityAt: new Date("2026-07-12T10:05:00.000Z"),

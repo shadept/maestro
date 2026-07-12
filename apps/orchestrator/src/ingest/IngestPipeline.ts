@@ -28,6 +28,11 @@ export type IngestOutcome =
       readonly taskRunId: TaskRunId;
     }
   | { readonly _tag: "TurnQueued"; readonly sessionId: SessionId; readonly taskRunId: TaskRunId }
+  | {
+      readonly _tag: "SessionResumed";
+      readonly sessionId: SessionId;
+      readonly taskRunId: TaskRunId;
+    }
   | { readonly _tag: "TerminalRecorded"; readonly sessionId: SessionId }
   | { readonly _tag: "Duplicate" }
   | { readonly _tag: "Ignored"; readonly reason: string };
@@ -52,10 +57,17 @@ export class IngestPipeline extends Context.Service<
      * A ticket was handed to Maestro (Linear: trigger label present). Creates
      * the session and its first turn; an already-active session makes this a
      * no-op so replayed/reshuffled label events never double-trigger.
+     *
+     * `resumeSignal` marks an explicit human (re-)trigger — Linear: the label
+     * set actually changed on the event, not merely "label still present on
+     * some issue update". On a session the failure circuit breaker paused
+     * (FUR-39), a resume signal clears the breaker and queues a fresh turn;
+     * without it a paused session stays paused.
      */
     readonly startTask: (args: {
       readonly project: Project;
       readonly context: TaskContext;
+      readonly resumeSignal?: boolean;
     }) => Effect.Effect<IngestOutcome, IngestPipelineError>;
     /**
      * A follow-up (Linear: new comment on a triggered issue) — one more turn
@@ -99,9 +111,27 @@ export class IngestPipeline extends Context.Service<
         startTask: Effect.fn("IngestPipeline.startTask")(function* (args) {
           const existing = yield* sessionRepo.findActiveByTicket(args.context.ticket);
           if (Option.isSome(existing)) {
+            const session = existing.value;
+            if (session.pausedAt !== null && args.resumeSignal === true) {
+              // Manual resume (FUR-39): the human re-applied the trigger
+              // label to a breaker-paused session. Clear the breaker, audit
+              // the human action, and queue a fresh turn from the ticket.
+              yield* sessionRepo.resume(session.id);
+              yield* auditRepo.record({
+                actor: args.context.actor,
+                action: "session-resumed",
+                targetEntity: `session:${session.id}`,
+              });
+              const taskRun = yield* createTurn(session.id, args.context);
+              return {
+                _tag: "SessionResumed",
+                sessionId: session.id,
+                taskRunId: taskRun.id,
+              } satisfies IngestOutcome;
+            }
             return {
               _tag: "Ignored",
-              reason: `session ${existing.value.id} already active for ${args.context.ticket.externalId}`,
+              reason: `session ${session.id} already active for ${args.context.ticket.externalId}`,
             } satisfies IngestOutcome;
           }
           const session = yield* sessionRepo.create({
@@ -122,6 +152,17 @@ export class IngestPipeline extends Context.Service<
             return {
               _tag: "Ignored",
               reason: `no active session for ${args.context.ticket.externalId}`,
+            } satisfies IngestOutcome;
+          }
+          // Circuit breaker (FUR-39): a paused session accepts no
+          // auto-triggered turns — not even from genuine human comments —
+          // until a human resumes it via the trigger label.
+          if (session.value.pausedAt !== null) {
+            return {
+              _tag: "Ignored",
+              reason:
+                `session ${session.value.id} is paused after repeated failures; ` +
+                `re-apply the trigger label to resume`,
             } satisfies IngestOutcome;
           }
           const taskRun = yield* createTurn(session.value.id, args.context);

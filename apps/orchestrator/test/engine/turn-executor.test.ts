@@ -17,6 +17,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AgentContract } from "../../src/agent/AgentContract.ts";
 import { AppConfig } from "../../src/config/AppConfig.ts";
+import { AuditRepo } from "../../src/db/AuditRepo.ts";
 import { Db } from "../../src/db/Db.ts";
 import { OutboxRepo } from "../../src/db/OutboxRepo.ts";
 import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
@@ -96,6 +97,7 @@ const makeLayer = (
     SessionRepo.layer,
     TaskRunRepo.layer,
     OutboxRepo.layer,
+    AuditRepo.layer,
   );
   const gitLayer = Layer.mergeAll(GitCache.layer, WorktreeManager.layer, OutboundGit.layer).pipe(
     Layer.provideMerge(GitCache.layer),

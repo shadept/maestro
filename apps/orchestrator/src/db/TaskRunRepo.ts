@@ -12,7 +12,7 @@ import {
   type TaskRunState,
   taskRunTransitions,
 } from "@maestro/domain";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { Context, Effect, Layer, Schema } from "effect";
 import { EventBus } from "../events/EventBus.ts";
 import { Db } from "./Db.ts";
@@ -57,6 +57,16 @@ export class TaskRunRepo extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<TaskRun>, DbError>;
     /** Runs not yet settled (PENDING/PROVISIONING/EXECUTING), oldest first — SSE snapshot. */
     readonly listActive: () => Effect.Effect<ReadonlyArray<TaskRun>, DbError>;
+    /**
+     * Circuit-breaker input (FUR-39): how many of the session's most recent
+     * settled turns FAILED in a row, with no COMPLETED in between. Derived
+     * from rows (id order — monotonic UUIDv7), never a counter, so it is
+     * crash-safe and replay-safe. CANCELLED failures are skipped, not counted
+     * and not a reset: cancellation is an orchestrator/human action, it says
+     * nothing about agent health. Saturates at a small window — callers only
+     * compare against a threshold far below it.
+     */
+    readonly countConsecutiveFailures: (sessionId: SessionId) => Effect.Effect<number, DbError>;
     /**
      * Compare-and-swap state transition (see SessionRepo.transition).
      * Optional fields (cause, deadlines) are set atomically with the state.
@@ -131,6 +141,30 @@ export class TaskRunRepo extends Context.Service<
               .orderBy(asc(taskRuns.createdAt)),
           );
           return rows.map(toTaskRun);
+        }),
+        countConsecutiveFailures: Effect.fn("TaskRunRepo.countConsecutiveFailures")(function* (
+          sessionId: SessionId,
+        ) {
+          const rows = yield* dbTry("TaskRunRepo.countConsecutiveFailures")(() =>
+            client
+              .select({ state: taskRuns.state, cause: taskRuns.cause })
+              .from(taskRuns)
+              .where(
+                and(
+                  eq(taskRuns.sessionId, sessionId),
+                  inArray(taskRuns.state, ["COMPLETED", "FAILED"]),
+                ),
+              )
+              .orderBy(desc(taskRuns.id))
+              .limit(20),
+          );
+          let failures = 0;
+          for (const row of rows) {
+            if (row.state === "COMPLETED") break;
+            if (row.cause === "CANCELLED") continue;
+            failures += 1;
+          }
+          return failures;
         }),
         transition: Effect.fn("TaskRunRepo.transition")(function* (
           id: TaskRunId,

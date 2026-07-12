@@ -18,6 +18,7 @@ export const sessions = pgTable(
     prUrl: text("pr_url"),
     state: text("state").$type<SessionState>().notNull(),
     terminationRequestedAt: timestamp("termination_requested_at", { withTimezone: true }),
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),
   },

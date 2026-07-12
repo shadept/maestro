@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { LogChunk } from "@maestro/api";
 import {
@@ -14,6 +15,7 @@ import {
 import { Context, Effect, Fiber, Layer, Schema, Stream } from "effect";
 import { AgentContract, type AgentEvent } from "../agent/AgentContract.ts";
 import { AppConfig } from "../config/AppConfig.ts";
+import { AuditRepo } from "../db/AuditRepo.ts";
 import { OutboxRepo } from "../db/OutboxRepo.ts";
 import { ProjectRepo } from "../db/ProjectRepo.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
@@ -37,13 +39,14 @@ export interface PrReference {
 }
 
 /**
- * Outbox payload written when a turn settles. The callback worker (FUR-18)
- * drains these entries and posts them back to the ticketing platform
+ * Outbox payload written when a turn settles — or when the failure circuit
+ * breaker pauses the session ("session-paused", FUR-39). The callback worker
+ * (FUR-18) drains these entries and posts them back to the ticketing platform
  * identified by `ticket.source`. A Schema (not just a type) because the
  * worker decodes it back out of the outbox's jsonb column.
  */
 export const TurnOutcomePayload = Schema.Struct({
-  kind: Schema.Literals(["turn-completed", "turn-failed"]),
+  kind: Schema.Literals(["turn-completed", "turn-failed", "session-paused"]),
   taskRunId: TaskRunId,
   sessionId: SessionId,
   ticket: TicketReference,
@@ -54,6 +57,44 @@ export const TurnOutcomePayload = Schema.Struct({
   pr: Schema.NullOr(Schema.Struct({ number: Schema.Number, url: Schema.String })),
 });
 export type TurnOutcomePayload = typeof TurnOutcomePayload.Type;
+
+/**
+ * Failure circuit breaker (FUR-39 layer 2): this many consecutive FAILED
+ * turns with no intervening success pauses the session — ingest stops
+ * accepting auto-triggered turns until a human resumes it (re-applies the
+ * trigger label). In-code constant by design: a misconfigured deployment must
+ * not be able to raise it. NOTE: resume does not reset the count (it is
+ * derived from settled runs, not stored), so after a manual resume a single
+ * further failure re-trips the breaker — deliberate: the session is still
+ * suspect until a turn actually succeeds.
+ */
+export const CONSECUTIVE_FAILURE_LIMIT = 3;
+
+/**
+ * Outbox idempotency keys per payload kind (FUR-39 layer 3 lives here):
+ * - turn-completed: one per turn — replayed settlements are no-ops.
+ * - turn-failed: session + failure-text hash — REPEATED IDENTICAL failures on
+ *   a session collapse into the one already-enqueued row (ON CONFLICT DO
+ *   NOTHING), so a failing-in-a-loop session posts its failure comment once
+ *   and stays silent until the failure text changes. Accepted edge: a text
+ *   that reappears after a different one in between stays silent too (the
+ *   human already saw it on this session).
+ * - session-paused: one per breaker trip, keyed by the turn that tripped it.
+ */
+export const outcomeIdempotencyKey = (payload: TurnOutcomePayload): string => {
+  switch (payload.kind) {
+    case "turn-completed":
+      return `turn-result:${payload.taskRunId}`;
+    case "turn-failed": {
+      const digest = createHash("sha256")
+        .update(`${payload.cause}:${payload.summary}`)
+        .digest("hex");
+      return `turn-failure:${payload.sessionId}:${digest.slice(0, 32)}`;
+    }
+    case "session-paused":
+      return `session-paused:${payload.taskRunId}`;
+  }
+};
 
 /** The session's persisted PR reference, if the orchestrator has pushed before. */
 const prOf = (session: Session): PrReference | null =>
@@ -122,6 +163,7 @@ export class TurnExecutor extends Context.Service<
       const sessionRepo = yield* SessionRepo;
       const taskRunRepo = yield* TaskRunRepo;
       const outboxRepo = yield* OutboxRepo;
+      const auditRepo = yield* AuditRepo;
       const gitCache = yield* GitCache;
       const worktreeManager = yield* WorktreeManager;
       const outboundGit = yield* OutboundGit;
@@ -159,8 +201,48 @@ export class TurnExecutor extends Context.Service<
           taskRunId: payload.taskRunId,
           target: payload.ticket.source,
           payload,
-          // one outcome per turn — replayed settlements are no-ops
-          idempotencyKey: `turn-result:${payload.taskRunId}`,
+          idempotencyKey: outcomeIdempotencyKey(payload),
+        });
+
+      /**
+       * Failure circuit breaker (FUR-39 layer 2), evaluated after every
+       * non-CANCELLED FAILED settle. Query-based (consecutive failures are
+       * derived from settled rows), but the trip itself is the set-once
+       * pause marker: only the settle that flips it emits the audit entry
+       * and the "session paused" ticket comment — crossing the threshold
+       * speaks exactly once per pause.
+       */
+      const maybeTripBreaker = (args: {
+        readonly job: TurnJob;
+        readonly ticket: TicketReference;
+      }) =>
+        Effect.gen(function* () {
+          const failures = yield* taskRunRepo.countConsecutiveFailures(args.job.sessionId);
+          if (failures < CONSECUTIVE_FAILURE_LIMIT) return;
+          const { session, newlyPaused } = yield* sessionRepo.pause(args.job.sessionId);
+          if (!newlyPaused) return;
+          yield* auditRepo.record({
+            actor: "maestro",
+            action: "session-paused",
+            targetEntity: `session:${args.job.sessionId}`,
+            priorState: session.state,
+          });
+          yield* enqueueOutcome({
+            kind: "session-paused",
+            taskRunId: args.job.taskRunId,
+            sessionId: args.job.sessionId,
+            ticket: args.ticket,
+            summary:
+              `Maestro paused this session after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures. ` +
+              `New comments will not trigger turns; to resume, re-apply the trigger label ` +
+              `("${config.linearTriggerLabel}") to the issue.`,
+            cause: null,
+            pr: prOf(session),
+          });
+          yield* Effect.logWarning("TurnExecutor: circuit breaker paused session", {
+            sessionId: args.job.sessionId,
+            consecutiveFailures: failures,
+          });
         });
 
       // WARM_IDLE is where every settled turn leaves its session. Sessions
@@ -198,6 +280,10 @@ export class TurnExecutor extends Context.Service<
             cause: args.cause,
             pr: args.pr,
           });
+          // cancellations say nothing about agent health — never trip on them
+          if (args.cause !== "CANCELLED") {
+            yield* maybeTripBreaker({ job: args.job, ticket: args.ticket });
+          }
           yield* settleSession(args.job.sessionId);
         });
 

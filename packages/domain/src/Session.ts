@@ -38,6 +38,14 @@ export const Session = Schema.Struct({
    * signal received.
    */
   terminationRequestedAt: Schema.NullOr(Schema.Date),
+  /**
+   * Circuit breaker (FUR-39): set when consecutive failed turns crossed the
+   * in-code threshold. A paused session stops accepting auto-triggered turns
+   * (ingest returns Ignored) until a human resumes it — re-applying the
+   * trigger label clears the marker. Not a session state: the session is
+   * still active/warm, only the comment→turn door is shut.
+   */
+  pausedAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
   /** Drives LRU eviction ordering. Updated on every turn activity. */
   lastActivityAt: Schema.Date,

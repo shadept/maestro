@@ -24,14 +24,16 @@ export class OutboxRepo extends Context.Service<
     readonly listPending: (limit: number) => Effect.Effect<ReadonlyArray<OutboxEntry>, DbError>;
     readonly markSent: (id: string) => Effect.Effect<void, DbError>;
     /**
-     * Records a delivery failure; the entry stays PENDING for retry.
-     * `nextAttemptAt` (persisted, so backoff survives restarts) gates when
-     * `listPending` surfaces the row again.
+     * Records a delivery failure. By default the entry stays PENDING for
+     * retry, gated by `nextAttemptAt` (persisted, so backoff survives
+     * restarts). With `terminal: true` the entry settles FAILED — excluded
+     * from `listPending` forever, while `lastError` and the attempt count
+     * stay observable on the row.
      */
     readonly recordFailure: (
       id: string,
       error: string,
-      nextAttemptAt?: Date,
+      retry?: { readonly nextAttemptAt: Date } | { readonly terminal: true },
     ) => Effect.Effect<void, DbError>;
   }
 >()("maestro/db/OutboxRepo") {
@@ -90,15 +92,18 @@ export class OutboxRepo extends Context.Service<
         recordFailure: Effect.fn("OutboxRepo.recordFailure")(function* (
           id: string,
           error: string,
-          nextAttemptAt?: Date,
+          retry?: { readonly nextAttemptAt: Date } | { readonly terminal: true },
         ) {
+          const terminal = retry !== undefined && "terminal" in retry;
           const rows = yield* dbTry("OutboxRepo.recordFailure")(() =>
             client
               .update(outbox)
               .set({
                 attempts: sql`${outbox.attempts} + 1`,
                 lastError: error,
-                nextAttemptAt: nextAttemptAt ?? null,
+                nextAttemptAt:
+                  retry !== undefined && "nextAttemptAt" in retry ? retry.nextAttemptAt : null,
+                ...(terminal && { status: "FAILED" as const }),
               })
               .where(eq(outbox.id, id))
               .returning({ id: outbox.id }),

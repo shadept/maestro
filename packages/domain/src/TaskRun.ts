@@ -28,6 +28,7 @@ export const canTaskRunTransition = (from: TaskRunState, to: TaskRunState): bool
   taskRunTransitions[from].includes(to);
 
 /** Failure cause classification, captured when a turn goes FAILED. */
+// RATE_LIMIT is part of the FUR-6 domain spec but has no producer yet — nothing classifies it.
 export const TaskRunCause = Schema.Literals(["ERROR", "OOM", "TIMEOUT", "CANCELLED", "RATE_LIMIT"]);
 export type TaskRunCause = typeof TaskRunCause.Type;
 

@@ -4,7 +4,7 @@ import { eq } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { CallbackWorker } from "../../src/callback/CallbackWorker.ts";
+import { CallbackWorker, MAX_DELIVERY_ATTEMPTS } from "../../src/callback/CallbackWorker.ts";
 import { LinearCallback, type LinearCommentCall } from "../../src/callback/LinearCallback.ts";
 import { Db } from "../../src/db/Db.ts";
 import { OutboxRepo } from "../../src/db/OutboxRepo.ts";
@@ -165,6 +165,48 @@ describe("CallbackWorker", () => {
     await drain(fake);
     expect(fake.calls).toHaveLength(2);
   }, 15_000);
+
+  it("a permanently failing row settles FAILED at the attempt threshold — never retried again", async () => {
+    const fake = makeFake();
+    fake.failWith.current = new CallbackDeliveryError({ target: "linear", reason: "linear down" });
+    const { entry } = await run(fake, setup());
+    // fast-forward the retry history to one attempt shy of the give-up threshold
+    await testDb.db
+      .update(outbox)
+      .set({ attempts: MAX_DELIVERY_ATTEMPTS - 1 })
+      .where(eq(outbox.id, entry.id));
+
+    await drain(fake);
+    expect(fake.calls).toHaveLength(1); // the final attempt happened...
+    let row = await outboxRow(entry.id);
+    expect(row.status).toBe("FAILED"); // ...and crossed the threshold: terminal
+    expect(row.attempts).toBe(MAX_DELIVERY_ATTEMPTS);
+    // the failure stays observable on the row
+    expect(row.lastError).toContain("linear down");
+
+    // terminal means terminal: even a now-healthy platform never sees the row
+    fake.failWith.current = undefined;
+    const processed = await drain(fake);
+    expect(processed).toBe(0);
+    expect(fake.calls).toHaveLength(1);
+    row = await outboxRow(entry.id);
+    expect(row.status).toBe("FAILED");
+  });
+
+  it("a row that succeeds before the threshold still settles SENT", async () => {
+    const fake = makeFake();
+    const { entry } = await run(fake, setup());
+    await testDb.db
+      .update(outbox)
+      .set({ attempts: MAX_DELIVERY_ATTEMPTS - 1 })
+      .where(eq(outbox.id, entry.id));
+
+    await drain(fake);
+    expect(fake.calls).toHaveLength(1);
+    const row = await outboxRow(entry.id);
+    expect(row.status).toBe("SENT");
+    expect(row.sentAt).not.toBeNull();
+  });
 
   it("a row without a resolvable Linear issue id is recorded as failed, not dropped", async () => {
     const fake = makeFake();

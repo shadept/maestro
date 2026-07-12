@@ -14,6 +14,14 @@ const MAX_BACKOFF_MILLIS = 5 * 60_000;
 const backoffMillis = (priorAttempts: number): number =>
   Math.min(BASE_BACKOFF_MILLIS * 2 ** priorAttempts, MAX_BACKOFF_MILLIS);
 
+/**
+ * Terminal give-up: a row that has failed this many delivery attempts settles
+ * FAILED and is never retried (>1h of capped backoff — a platform outage that
+ * long means the result is stale; the row keeps lastError + attempts for
+ * inspection and manual replay). Exported for the worker tests.
+ */
+export const MAX_DELIVERY_ATTEMPTS = 15;
+
 const decodeOutcome = Schema.decodeUnknownEffect(TurnOutcomePayload);
 
 /**
@@ -23,7 +31,8 @@ const decodeOutcome = Schema.decodeUnknownEffect(TurnOutcomePayload);
  * Delivery semantics — honestly stated: at-least-once posting with dedup at
  * the outbox-row level. A row is marked SENT only after the platform accepted
  * the post; failures record an error + a persisted next-attempt time
- * (exponential backoff that survives restarts). A crash in the instant
+ * (exponential backoff that survives restarts) until MAX_DELIVERY_ATTEMPTS,
+ * after which the row settles FAILED terminally. A crash in the instant
  * between a successful post and markSent re-posts once on recovery — the
  * idempotency key prevents double-enqueue, not platform-side double-posting.
  */
@@ -32,8 +41,9 @@ export class CallbackWorker extends Context.Service<
   {
     /**
      * One drain pass over due PENDING rows, oldest first. Row-level failures
-     * never fail the pass (they are recorded on the row for retry); only DB
-     * trouble does. Returns the number of rows processed.
+     * never fail the pass (they are recorded on the row for retry — or as
+     * terminal FAILED past the give-up threshold); only DB trouble does.
+     * Returns the number of rows processed.
      */
     readonly drainOnce: () => Effect.Effect<number, DbError>;
   }
@@ -54,7 +64,8 @@ export class CallbackWorker extends Context.Service<
           const fail = deliveryError(entry);
           if (entry.target !== "linear") {
             // M2's generic API adds its own sender; until then such rows
-            // retry (capped backoff) rather than being silently dropped.
+            // retry (capped backoff, terminal FAILED after the give-up
+            // threshold) rather than being silently dropped.
             return yield* fail(`no callback adapter for target "${entry.target}"`);
           }
           const outcome = yield* decodeOutcome(entry.payload).pipe(
@@ -82,20 +93,32 @@ export class CallbackWorker extends Context.Service<
               Effect.matchEffect({
                 // markSent strictly after the platform accepted the post.
                 onSuccess: () => outboxRepo.markSent(entry.id),
-                onFailure: (error) =>
-                  Effect.logWarning("callback delivery failed; will retry", {
-                    outboxId: entry.id,
-                    attempts: entry.attempts + 1,
-                    reason: error.reason,
-                  }).pipe(
+                onFailure: (error) => {
+                  const attempts = entry.attempts + 1;
+                  const terminal = attempts >= MAX_DELIVERY_ATTEMPTS;
+                  const log = terminal
+                    ? Effect.logError("callback delivery abandoned; giving up permanently", {
+                        outboxId: entry.id,
+                        attempts,
+                        reason: error.reason,
+                      })
+                    : Effect.logWarning("callback delivery failed; will retry", {
+                        outboxId: entry.id,
+                        attempts,
+                        reason: error.reason,
+                      });
+                  return log.pipe(
                     Effect.andThen(
                       outboxRepo.recordFailure(
                         entry.id,
                         error.reason,
-                        new Date(Date.now() + backoffMillis(entry.attempts)),
+                        terminal
+                          ? { terminal: true }
+                          : { nextAttemptAt: new Date(Date.now() + backoffMillis(entry.attempts)) },
                       ),
                     ),
-                  ),
+                  );
+                },
               }),
             );
           }

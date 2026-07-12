@@ -1,4 +1,4 @@
-import { Config, Context, Layer, type Option, type Redacted } from "effect";
+import { Config, Context, Layer, Option, Redacted } from "effect";
 
 // Every env var the orchestrator understands, validated at boot. Values are
 // resolved once into this service; nothing else reads process.env.
@@ -43,10 +43,20 @@ export class AppConfig extends Context.Service<
 >()("maestro/config/AppConfig") {
   static readonly layer = Layer.effect(AppConfig, Config.all(config));
 
-  /** Test layer: a fully populated config with overridable fields. */
+  /** Test layer: pure in-memory config — never touches the environment. */
   static readonly layerTest = (overrides: Partial<AppConfig["Service"]> = {}) =>
-    Layer.effect(
-      AppConfig,
-      Config.all(config).pipe(Config.map((base) => ({ ...base, ...overrides }))),
-    );
+    Layer.succeed(AppConfig)({
+      databaseUrl: "postgresql://localhost:5432/maestro-test",
+      storageRoot: "/tmp/maestro-test",
+      runtimeTemplate: "docker run",
+      maxConcurrentWorkers: 2,
+      cooldownMinutes: 60,
+      retentionDays: 14,
+      adminToken: Redacted.make("test-admin-token"),
+      agentOauthToken: Option.none(),
+      agentApiKey: Option.none(),
+      logFormat: "pretty",
+      port: 0,
+      ...overrides,
+    });
 }

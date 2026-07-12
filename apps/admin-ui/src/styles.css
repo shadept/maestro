@@ -262,7 +262,8 @@ pre.payload {
   overflow: auto;
 }
 
-pre.log-tail {
+pre.log-tail,
+div.log-tail {
   background: #0d0f12;
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -271,4 +272,94 @@ pre.log-tail {
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* log tail view toggle */
+.view-toggle {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.view-toggle button {
+  background: none;
+  color: var(--muted);
+  padding: 3px 10px;
+  font-size: 12px;
+}
+
+.view-toggle button.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* chat log (FUR-43) */
+.chat-log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.chat-bubble {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.chat-thinking {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chat-thinking summary {
+  cursor: pointer;
+}
+
+.chat-tool {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  background: var(--surface);
+}
+
+.chat-tool summary {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  list-style: revert;
+}
+
+.chat-tool h5 {
+  margin: 10px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+.chat-result {
+  border-radius: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+}
+
+.chat-result p {
+  margin: 4px 0 0;
+}
+
+.chat-result.ok {
+  border-color: var(--ok);
+}
+
+.chat-result.bad {
+  border-color: var(--bad);
+}
+
+.chat-raw {
+  margin: 0;
+  padding: 4px 8px;
+  color: var(--muted);
+  background: #0d0f12;
+  border-left: 2px solid var(--warn);
 }

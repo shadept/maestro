@@ -5,6 +5,7 @@ import { AppConfig } from "../config/AppConfig.ts";
 import { repoCacheDir, worktreeDir } from "../storage/paths.ts";
 import { GitCache } from "./GitCache.ts";
 import { runGit } from "./git-command.ts";
+import { RepoLocks } from "./RepoLocks.ts";
 
 /**
  * Computes the session branch from the project's convention overrides.
@@ -59,6 +60,7 @@ export class WorktreeManager extends Context.Service<
     Effect.gen(function* () {
       const { storageRoot } = yield* AppConfig;
       const gitCache = yield* GitCache;
+      const repoLocks = yield* RepoLocks;
 
       const pathsFor = ({ session, project }: { session: Session; project: Project }) => ({
         worktreePath: worktreeDir(storageRoot, session.id),
@@ -73,47 +75,60 @@ export class WorktreeManager extends Context.Service<
 
       return {
         pathsFor,
+        // provision/remove mutate shared bare-repo state (config via upstream
+        // setup, refs, worktree metadata); git's file locks fail fast instead
+        // of waiting, so concurrent sessions on one project must be serialized
+        // behind the per-project RepoLock. The idempotency probes sit inside
+        // the lock so concurrent calls for the same session are safe too.
         provision: Effect.fn("WorktreeManager.provision")(function* (args: {
           session: Session;
           project: Project;
         }) {
-          const paths = pathsFor(args);
-          if (yield* exists(paths.worktreePath)) {
-            return paths;
-          }
-          const branch = args.session.gitBranch;
-          if (yield* branchExists(paths.gitDir, branch)) {
-            // crash recovery / re-provision after eviction that lost the dir
-            yield* runGit(["worktree", "add", paths.worktreePath, branch], {
-              cwd: paths.gitDir,
-            });
-          } else {
-            const base =
-              args.project.gitConventions.baseBranch ??
-              (yield* gitCache.defaultBranch(args.project));
-            yield* runGit(["worktree", "add", "-b", branch, paths.worktreePath, base], {
-              cwd: paths.gitDir,
-            });
-          }
-          return paths;
+          return yield* repoLocks.withRepoLock(args.project.id)(
+            Effect.gen(function* () {
+              const paths = pathsFor(args);
+              if (yield* exists(paths.worktreePath)) {
+                return paths;
+              }
+              const branch = args.session.gitBranch;
+              if (yield* branchExists(paths.gitDir, branch)) {
+                // crash recovery / re-provision after eviction that lost the dir
+                yield* runGit(["worktree", "add", paths.worktreePath, branch], {
+                  cwd: paths.gitDir,
+                });
+              } else {
+                const base =
+                  args.project.gitConventions.baseBranch ??
+                  (yield* gitCache.defaultBranch(args.project));
+                yield* runGit(["worktree", "add", "-b", branch, paths.worktreePath, base], {
+                  cwd: paths.gitDir,
+                });
+              }
+              return paths;
+            }),
+          );
         }),
         remove: Effect.fn("WorktreeManager.remove")(function* (args: {
           session: Session;
           project: Project;
         }) {
-          const paths = pathsFor(args);
-          if (yield* exists(paths.worktreePath)) {
-            yield* runGit(["worktree", "remove", "--force", paths.worktreePath], {
-              cwd: paths.gitDir,
-            });
-          } else {
-            // directory already gone — clear stale metadata if any
-            yield* runGit(["worktree", "prune"], { cwd: paths.gitDir });
-          }
-          yield* Effect.promise(() => rm(paths.worktreePath, { recursive: true, force: true }));
-          if (yield* branchExists(paths.gitDir, args.session.gitBranch)) {
-            yield* runGit(["branch", "-D", args.session.gitBranch], { cwd: paths.gitDir });
-          }
+          yield* repoLocks.withRepoLock(args.project.id)(
+            Effect.gen(function* () {
+              const paths = pathsFor(args);
+              if (yield* exists(paths.worktreePath)) {
+                yield* runGit(["worktree", "remove", "--force", paths.worktreePath], {
+                  cwd: paths.gitDir,
+                });
+              } else {
+                // directory already gone — clear stale metadata if any
+                yield* runGit(["worktree", "prune"], { cwd: paths.gitDir });
+              }
+              yield* Effect.promise(() => rm(paths.worktreePath, { recursive: true, force: true }));
+              if (yield* branchExists(paths.gitDir, args.session.gitBranch)) {
+                yield* runGit(["branch", "-D", args.session.gitBranch], { cwd: paths.gitDir });
+              }
+            }),
+          );
         }),
       };
     }),

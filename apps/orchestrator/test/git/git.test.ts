@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AppConfig } from "../../src/config/AppConfig.ts";
 import { GitCache } from "../../src/git/GitCache.ts";
+import { RepoLocks } from "../../src/git/RepoLocks.ts";
 import { branchNameFor, WorktreeManager } from "../../src/git/WorktreeManager.ts";
 
 const git = (cwd: string, ...args: string[]): string =>
@@ -58,6 +59,8 @@ beforeAll(async () => {
 
   layer = Layer.mergeAll(GitCache.layer, WorktreeManager.layer).pipe(
     Layer.provideMerge(GitCache.layer),
+    // single RepoLocks reference — memoized, so both services share one lock map
+    Layer.provide(RepoLocks.layer),
     Layer.provide(
       AppConfig.layerTest({
         databaseUrl: "postgresql://unused:5432/x",

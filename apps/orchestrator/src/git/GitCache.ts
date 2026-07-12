@@ -5,6 +5,7 @@ import { Context, Effect, Layer } from "effect";
 import { AppConfig } from "../config/AppConfig.ts";
 import { repoCacheDir } from "../storage/paths.ts";
 import { type GitCredentials, runGit } from "./git-command.ts";
+import { RepoLocks } from "./RepoLocks.ts";
 
 const exists = (p: string) =>
   Effect.promise(() =>
@@ -39,6 +40,7 @@ export class GitCache extends Context.Service<
     GitCache,
     Effect.gen(function* () {
       const { storageRoot } = yield* AppConfig;
+      const repoLocks = yield* RepoLocks;
       const cachePathFor = (project: Project) => repoCacheDir(storageRoot, project.id);
 
       return {
@@ -47,27 +49,37 @@ export class GitCache extends Context.Service<
           project: Project,
           credentials?: GitCredentials,
         ) {
-          const cachePath = cachePathFor(project);
-          if (yield* exists(path.join(cachePath, "HEAD"))) {
-            return cachePath;
-          }
-          yield* Effect.promise(() => mkdir(path.dirname(cachePath), { recursive: true }));
-          yield* runGit(
-            ["clone", "--bare", project.repoGitUrl, cachePath],
-            credentials ? { credentials } : {},
+          // Locked including the existence probe: two concurrent ensureClones
+          // would otherwise both see a missing clone and race `git clone`.
+          return yield* repoLocks.withRepoLock(project.id)(
+            Effect.gen(function* () {
+              const cachePath = cachePathFor(project);
+              if (yield* exists(path.join(cachePath, "HEAD"))) {
+                return cachePath;
+              }
+              yield* Effect.promise(() => mkdir(path.dirname(cachePath), { recursive: true }));
+              yield* runGit(
+                ["clone", "--bare", project.repoGitUrl, cachePath],
+                credentials ? { credentials } : {},
+              );
+              // Bare clones get no fetch refspec; keep local heads mirroring origin's.
+              yield* runGit(["config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"], {
+                cwd: cachePath,
+              });
+              return cachePath;
+            }),
           );
-          // Bare clones get no fetch refspec; keep local heads mirroring origin's.
-          yield* runGit(["config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"], {
-            cwd: cachePath,
-          });
-          return cachePath;
         }),
         fetch: Effect.fn("GitCache.fetch")(function* (
           project: Project,
           credentials?: GitCredentials,
         ) {
+          // fetch rewrites refs/heads/* (mirror refspec) — locked so it cannot
+          // collide with worktree/branch mutations on the same repo.
           const cwd = cachePathFor(project);
-          yield* runGit(["fetch", "origin"], credentials ? { cwd, credentials } : { cwd });
+          yield* repoLocks.withRepoLock(project.id)(
+            runGit(["fetch", "origin"], credentials ? { cwd, credentials } : { cwd }),
+          );
         }),
         defaultBranch: Effect.fn("GitCache.defaultBranch")(function* (project: Project) {
           const ref = yield* runGit(["symbolic-ref", "HEAD"], { cwd: cachePathFor(project) });

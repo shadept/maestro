@@ -5,6 +5,7 @@ import { Effect, Layer, Option, Redacted, type Scope } from "effect";
 import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { MAESTRO_COMMENT_MARKER } from "../../src/callback/format.ts";
 import { AppConfig } from "../../src/config/AppConfig.ts";
 import { AuditRepo } from "../../src/db/AuditRepo.ts";
 import { Db } from "../../src/db/Db.ts";
@@ -35,14 +36,18 @@ type Services = ProjectRepo | SessionRepo | TaskRunRepo | AuditRepo | HttpClient
 let testDb: TestDb;
 let layer: Layer.Layer<Services>;
 let layerWithoutSecret: Layer.Layer<Services>;
+let layerWithoutBotUserId: Layer.Layer<Services>;
 
 beforeAll(async () => {
   testDb = await startTestDb();
-  const makeLayer = (secret: Option.Option<Redacted.Redacted>) => {
+  const makeLayer = (
+    secret: Option.Option<Redacted.Redacted>,
+    botUserId: Option.Option<string> = Option.some(BOT_USER_ID),
+  ) => {
     const config = AppConfig.layerTest({
       databaseUrl: testDb.connectionString,
       linearWebhookSecret: secret,
-      linearBotUserId: Option.some(BOT_USER_ID),
+      linearBotUserId: botUserId,
     });
     const infra = Layer.mergeAll(EventBus.layer, Db.layerTest(testDb.connectionString), config);
     const repos = Layer.mergeAll(
@@ -78,6 +83,7 @@ beforeAll(async () => {
   };
   layer = makeLayer(Option.some(Redacted.make(LINEAR_TEST_SECRET)));
   layerWithoutSecret = makeLayer(Option.none());
+  layerWithoutBotUserId = makeLayer(Option.some(Redacted.make(LINEAR_TEST_SECRET)), Option.none());
 }, 120_000);
 
 afterAll(async () => {
@@ -241,10 +247,11 @@ describe("POST /api/webhooks/linear", () => {
   });
 
   it("Maestro's own comment does NOT queue a turn", async () => {
+    // Marker-free body so this exercises the bot-userId guard on its own.
     const fixture = withData(loadLinearFixture("comment-created"), {
       userId: BOT_USER_ID,
       user: { id: BOT_USER_ID, name: "Maestro" },
-      body: "**Maestro** — turn completed.\n\nDone.",
+      body: "Turn completed.\n\nDone.",
     });
     const response = await run(post(signLinearDelivery(fixture)));
     expect(response.status).toBe(200);
@@ -252,6 +259,45 @@ describe("POST /api/webhooks/linear", () => {
 
     const session = Option.getOrThrow(await run(activeSession));
     expect(await run(runsOf(session))).toHaveLength(2);
+  });
+
+  it("a marker-prefixed comment does NOT queue a turn, whoever authored it (FUR-39)", async () => {
+    // Single-account setup: Maestro posts with the human's own API token, so
+    // the author id matches the human, not the configured bot id. The content
+    // marker must break the loop on its own.
+    const fixture = withData(loadLinearFixture("comment-created"), {
+      body: `${MAESTRO_COMMENT_MARKER} turn completed.\n\nDone.`,
+    });
+    const response = await run(post(signLinearDelivery(fixture)));
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+
+    const session = Option.getOrThrow(await run(activeSession));
+    expect(await run(runsOf(session))).toHaveLength(2);
+  });
+
+  it("a marker-prefixed comment does NOT queue a turn even with no bot user id configured (FUR-39)", async () => {
+    const fixture = withData(loadLinearFixture("comment-created"), {
+      body: `${MAESTRO_COMMENT_MARKER} turn failed (ERROR).\n\nBoom.`,
+    });
+    const response = await run(post(signLinearDelivery(fixture)), layerWithoutBotUserId);
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+
+    const session = Option.getOrThrow(await run(activeSession));
+    expect(await run(runsOf(session))).toHaveLength(2);
+  });
+
+  it("a genuine human comment still queues a turn when no bot user id is configured", async () => {
+    const fixture = withData(loadLinearFixture("comment-created"), {
+      body: "One more thing: bump the changelog.",
+    });
+    const response = await run(post(signLinearDelivery(fixture)), layerWithoutBotUserId);
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("TurnQueued");
+
+    const session = Option.getOrThrow(await run(activeSession));
+    expect(await run(runsOf(session))).toHaveLength(3);
   });
 
   it("a comment on an untriggered issue is ignored", async () => {
@@ -298,9 +344,9 @@ describe("POST /api/webhooks/linear", () => {
     // the session no longer counts as active for its ticket
     expect(await run(activeSession)).toEqual(Option.none());
 
-    // both queued (PENDING) turns were cancelled — nothing was executing
+    // all queued (PENDING) turns were cancelled — nothing was executing
     const runs = await run(runsOf(session));
-    expect(runs).toHaveLength(2);
+    expect(runs).toHaveLength(3);
     for (const taskRun of runs) {
       expect(taskRun.state).toBe("FAILED");
       expect(taskRun.cause).toBe("CANCELLED");

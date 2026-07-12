@@ -8,6 +8,24 @@ import path from "node:path";
 
 export const FAKE_AGENT_IMAGE = "maestro-fake-agent:local";
 
+/**
+ * Runtime template for suites that bind-mount harness-provisioned directories
+ * (worktrees, bare repos, config dirs) into the fake agent.
+ *
+ * On Linux hosts bind mounts preserve real ownership, and the image's baked-in
+ * uid 1000 does not necessarily match the test process (GitHub runners are uid
+ * 1001) — the agent then cannot write the mounted worktree at all. Running the
+ * container as the CURRENT uid/gid is correct by construction: the test
+ * process created every mounted path, so it always owns them. On macOS Docker
+ * Desktop ownership is mapped loosely and this is effectively a no-op.
+ *
+ * HOME=/tmp because an arbitrary -u uid has no passwd entry and cannot write
+ * the image's /home/agent; the fake agent's `git config --global` needs a
+ * writable HOME, and a container-private /tmp (mode 1777) always is.
+ */
+export const fakeAgentRuntimeTemplate = (): string =>
+  `docker run -u ${process.getuid?.() ?? 0}:${process.getgid?.() ?? 0} -e HOME=/tmp`;
+
 export const buildFakeAgentImage = (): void => {
   execFileSync(
     "docker",

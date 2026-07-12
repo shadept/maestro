@@ -40,7 +40,11 @@ esac
 
 printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Committing the work.\"}]},\"session_id\":\"$SESSION_UUID\"}"
 
-# The mounts are host-uid owned while the container runs as uid 1000.
+# uid-agnostic: the harness runs this container as the host test uid (which
+# owns the mounts) with HOME=/tmp — an arbitrary uid has no passwd entry, so
+# HOME must be somewhere always writable for the global git config below.
+# safe.directory stays: on macOS Docker Desktop mount ownership can still be
+# reported as a different uid than the container user.
 git config --global --add safe.directory '*'
 echo "agent was here" > agent-output.txt
 git add agent-output.txt

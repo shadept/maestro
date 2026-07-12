@@ -15,7 +15,7 @@
     "effect": "4.0.0-beta.97"
   },
   "devDependencies": {
-    "typescript": "~5.9.3",
+    "typescript": "~7.0.2",
     "vitest": "^4.1.10"
   }
 }

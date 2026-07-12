@@ -53,8 +53,12 @@ All four gates (`install`, `typecheck`, `lint`, `test`) must pass before every c
 
 - **`effect` is pinned exact** (`4.0.0-beta.97`, no `^`). It is a beta with real churn — upgrades
   are deliberate, reviewed commits, never implicit.
-- **TypeScript is pinned to the 5.9 line** (`~5.9.3`). TS 7 (native) is too fresh for the
-  Effect v4 beta's type-level machinery. Do not bump to 6/7 casually.
+- **TypeScript is pinned to the 7.0 line** (`~7.0.2`, native). Adopted 2026-07 after an
+  empirical trial: full typecheck + test suite green against `effect@4.0.0-beta.97`
+  (`moduleResolution: bundler` + `allowImportingTsExtensions` behave identically), and the
+  orchestrator's `tsc --noEmit` dropped from multi-second to ~0.2 s. The earlier `~5.9.3` pin
+  (FUR-5: early TS7-native builds choked on the Effect v4 beta) is obsolete. Keep the `~` pin;
+  minor/major bumps remain deliberate, re-verified commits.
 - **Biome** (not eslint + prettier): one fast tool for lint + format. House style = Biome
   defaults (semicolons, double quotes), `lineWidth: 100`.
 - **Node ≥ 24**, pnpm workspaces. Internal packages export TypeScript source directly

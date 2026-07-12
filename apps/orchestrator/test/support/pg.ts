@@ -12,7 +12,7 @@ export interface TestDb {
   readonly stop: () => Promise<void>;
 }
 
-const POSTGRES_IMAGE = "postgres:17-alpine";
+const POSTGRES_IMAGE = "postgres:18-alpine";
 
 /**
  * Shared integration-test harness: boots a Postgres container, applies all

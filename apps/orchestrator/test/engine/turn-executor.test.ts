@@ -3,7 +3,7 @@ import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ForgeApiError, type TaskContext, type TaskRun, type TaskRunState } from "@maestro/domain";
-import { Effect, Layer, type Scope } from "effect";
+import { Effect, Layer, PubSub, type Scope } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AgentContract } from "../../src/agent/AgentContract.ts";
@@ -14,6 +14,7 @@ import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 import { TaskRunRepo } from "../../src/db/TaskRunRepo.ts";
 import { TurnExecutor, type TurnOutcomePayload } from "../../src/engine/TurnExecutor.ts";
+import { EventBus } from "../../src/events/EventBus.ts";
 import { type ForgeCall, GitHubForge } from "../../src/forge/GitHubForge.ts";
 import { GitCache } from "../../src/git/GitCache.ts";
 import { OutboundGit } from "../../src/git/OutboundGit.ts";
@@ -30,7 +31,14 @@ import { startTestDb, type TestDb } from "../support/pg.ts";
 const FAKE_IMAGE = "maestro-fake-agent:fur15";
 const FAKE_SESSION_UUID = "7f0e8a3c-0000-4000-8000-feedfacecafe";
 
-type Services = TurnExecutor | TurnQueue | ProjectRepo | SessionRepo | TaskRunRepo | OutboxRepo;
+type Services =
+  | TurnExecutor
+  | TurnQueue
+  | ProjectRepo
+  | SessionRepo
+  | TaskRunRepo
+  | OutboxRepo
+  | EventBus;
 
 let testDb: TestDb;
 let root: string;
@@ -60,6 +68,7 @@ const makeLayer = (
   return Layer.mergeAll(executor, TurnQueue.layer).pipe(
     Layer.provideMerge(repos),
     Layer.provide(Db.layerTest(testDb.connectionString)),
+    Layer.provideMerge(EventBus.layer),
     Layer.provide(
       AppConfig.layerTest({
         databaseUrl: testDb.connectionString,
@@ -170,6 +179,9 @@ describe("TurnExecutor", () => {
         const queue = yield* TurnQueue;
         const executor = yield* TurnExecutor;
         const taskRunRepo = yield* TaskRunRepo;
+        const bus = yield* EventBus;
+        // FUR-16: the executor's log tee must publish every worker chunk.
+        const subscription = yield* bus.subscribe();
         yield* queue.work(executor.execute);
         observed.push((yield* taskRunRepo.get(taskRun.id)).state);
         yield* queue.enqueue({ taskRunId: taskRun.id, sessionId: session.id });
@@ -177,10 +189,18 @@ describe("TurnExecutor", () => {
         while (true) {
           const current = yield* taskRunRepo.get(taskRun.id);
           if (observed.at(-1) !== current.state) observed.push(current.state);
-          if (current.state === "COMPLETED" || current.state === "FAILED") return;
+          if (current.state === "COMPLETED" || current.state === "FAILED") break;
           if (Date.now() > deadline) return yield* Effect.die(new Error("turn never settled"));
           yield* Effect.sleep(50);
         }
+        // Every persisted log byte was also published live, in order (the log
+        // chunks all precede the settling transition, so they are buffered).
+        const events = yield* PubSub.takeUpTo(subscription, 10_000);
+        const chunks = events.flatMap((event) =>
+          event._tag === "LogChunk" && event.taskRunId === taskRun.id ? [event.chunk] : [],
+        );
+        expect(chunks.length).toBeGreaterThan(0);
+        expect(chunks.join("")).toBe(yield* taskRunRepo.getLogs(taskRun.id));
       }),
     );
 

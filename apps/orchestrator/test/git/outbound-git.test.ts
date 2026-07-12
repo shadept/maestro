@@ -11,6 +11,7 @@ import { AppConfig } from "../../src/config/AppConfig.ts";
 import { Db } from "../../src/db/Db.ts";
 import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
+import { EventBus } from "../../src/events/EventBus.ts";
 import { type ForgeCall, GitHubForge } from "../../src/forge/GitHubForge.ts";
 import { GitCache } from "../../src/git/GitCache.ts";
 import { OutboundGit } from "../../src/git/OutboundGit.ts";
@@ -54,6 +55,7 @@ beforeAll(async () => {
     Layer.provideMerge(Layer.mergeAll(GitCache.layer, SessionRepo.layer)),
     Layer.provide(Layer.mergeAll(RepoLocks.layer, GitHubForge.layerTest({ calls: forgeCalls }))),
     Layer.provide(Db.layerTest(testDb.connectionString)),
+    Layer.provide(EventBus.layer),
     Layer.provide(
       AppConfig.layerTest({
         databaseUrl: testDb.connectionString,

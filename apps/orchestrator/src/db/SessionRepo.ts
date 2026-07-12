@@ -1,3 +1,4 @@
+import { SessionStateChanged } from "@maestro/api";
 import {
   canSessionTransition,
   type DbError,
@@ -10,8 +11,9 @@ import {
   sessionTransitions,
   type TicketReference,
 } from "@maestro/domain";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { Context, Effect, Layer, Option, Schema } from "effect";
+import { EventBus } from "../events/EventBus.ts";
 import { Db } from "./Db.ts";
 import { sessions } from "./schema/index.ts";
 import { dbTry } from "./support.ts";
@@ -44,6 +46,8 @@ export class SessionRepo extends Context.Service<
   {
     readonly create: (input: SessionCreate) => Effect.Effect<Session, DbError>;
     readonly get: (id: SessionId) => Effect.Effect<Session, DbError>;
+    /** All sessions, most recently active first (admin list + SSE snapshot). */
+    readonly list: () => Effect.Effect<ReadonlyArray<Session>, DbError>;
     /** The non-terminated session bound to a ticket, if any. */
     readonly findActiveByTicket: (
       ticket: TicketReference,
@@ -66,6 +70,16 @@ export class SessionRepo extends Context.Service<
     SessionRepo,
     Effect.gen(function* () {
       const { client } = yield* Db;
+      const bus = yield* EventBus;
+
+      // DECISION (FUR-16): repos publish on every successful state-affecting
+      // write — inside the repo, not the caller, so no transition can go
+      // unpublished. Published: create (initial state), transition, and
+      // setPullRequest (the PR appearing is a UI-relevant session change).
+      // Not published: touchActivity (noise) and setClaudeSessionUuid
+      // (internal bookkeeping).
+      const publishChanged = (session: Session) =>
+        bus.publish(SessionStateChanged.make({ session }));
 
       const getById = (operation: string) => (id: SessionId) =>
         dbTry(operation)(() => client.select().from(sessions).where(eq(sessions.id, id))).pipe(
@@ -91,10 +105,18 @@ export class SessionRepo extends Context.Service<
               .returning(),
           );
           // biome-ignore lint/style/noNonNullAssertion: insert returning always yields one row
-          return toSession(rows[0]!);
+          const session = toSession(rows[0]!);
+          yield* publishChanged(session);
+          return session;
         }),
         get: Effect.fn("SessionRepo.get")(function* (id: SessionId) {
           return toSession(yield* getById("SessionRepo.get")(id));
+        }),
+        list: Effect.fn("SessionRepo.list")(function* () {
+          const rows = yield* dbTry("SessionRepo.list")(() =>
+            client.select().from(sessions).orderBy(desc(sessions.lastActivityAt)),
+          );
+          return rows.map(toSession);
         }),
         findActiveByTicket: Effect.fn("SessionRepo.findActiveByTicket")(function* (
           ticket: TicketReference,
@@ -125,7 +147,11 @@ export class SessionRepo extends Context.Service<
               .where(and(eq(sessions.id, id), inArray(sessions.state, [...legalFrom])))
               .returning(),
           );
-          if (rows[0]) return toSession(rows[0]);
+          if (rows[0]) {
+            const session = toSession(rows[0]);
+            yield* publishChanged(session);
+            return session;
+          }
           const current = yield* getById("SessionRepo.transition")(id);
           return yield* new StateTransitionError({
             entity: "Session",
@@ -166,7 +192,9 @@ export class SessionRepo extends Context.Service<
           if (!row) {
             return yield* new EntityNotFoundError({ entity: "Session", entityId: id });
           }
-          return toSession(row);
+          const session = toSession(row);
+          yield* publishChanged(session);
+          return session;
         }),
         touchActivity: Effect.fn("SessionRepo.touchActivity")(function* (id: SessionId) {
           const rows = yield* dbTry("SessionRepo.touchActivity")(() =>

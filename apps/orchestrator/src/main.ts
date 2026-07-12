@@ -13,11 +13,14 @@ import { ProjectRepo } from "./db/ProjectRepo.ts";
 import { SessionRepo } from "./db/SessionRepo.ts";
 import { TaskRunRepo } from "./db/TaskRunRepo.ts";
 import { TurnExecutor } from "./engine/TurnExecutor.ts";
+import { EventBus } from "./events/EventBus.ts";
 import { GitHubForge } from "./forge/GitHubForge.ts";
 import { GitCache } from "./git/GitCache.ts";
 import { OutboundGit } from "./git/OutboundGit.ts";
 import { RepoLocks } from "./git/RepoLocks.ts";
 import { WorktreeManager } from "./git/WorktreeManager.ts";
+import { AdminApiRoutes } from "./http/admin.ts";
+import { EventsRoutes } from "./http/events.ts";
 import { HealthRoutes } from "./http/health.ts";
 import { TurnQueue } from "./queue/TurnQueue.ts";
 import { WorkerRuntime } from "./runtime/WorkerRuntime.ts";
@@ -80,9 +83,17 @@ const TurnWorkerLive = Layer.effectDiscard(
   }),
 ).pipe(Layer.provide(TurnExecutorLive));
 
-const AppLive = HttpRouter.serve(HealthRoutes).pipe(
+// Health probes, the SSE firehose, and the admin read API (FUR-16). The SSE
+// route and admin handlers pull repos + EventBus from the shared layers below.
+const HttpRoutes = Layer.mergeAll(HealthRoutes, EventsRoutes, AdminApiRoutes);
+
+const AppLive = HttpRouter.serve(HttpRoutes).pipe(
   Layer.merge(TurnWorkerLive),
   Layer.provide(ServerLive),
+  Layer.provide(ReposLive),
+  // One EventBus for the whole process: repos, queue, executor, and the SSE
+  // endpoint all see the same instance (layer memoization by reference).
+  Layer.provide(EventBus.layer),
   Layer.provide(Db.layer),
   Layer.provide(LoggerLive),
   Layer.provide(AppConfig.layer),

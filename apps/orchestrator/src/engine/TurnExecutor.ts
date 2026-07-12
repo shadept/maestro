@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import { LogChunk } from "@maestro/api";
 import type {
   DbError,
   ForgeError,
@@ -17,6 +18,7 @@ import { OutboxRepo } from "../db/OutboxRepo.ts";
 import { ProjectRepo } from "../db/ProjectRepo.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
 import { TaskRunRepo } from "../db/TaskRunRepo.ts";
+import { EventBus } from "../events/EventBus.ts";
 import { GitCache } from "../git/GitCache.ts";
 import { OutboundGit } from "../git/OutboundGit.ts";
 import { WorktreeManager } from "../git/WorktreeManager.ts";
@@ -120,6 +122,7 @@ export class TurnExecutor extends Context.Service<
       const outboundGit = yield* OutboundGit;
       const runtime = yield* WorkerRuntime;
       const agent = yield* AgentContract;
+      const bus = yield* EventBus;
 
       const evictableAt = () => new Date(Date.now() + config.cooldownMinutes * 60_000);
 
@@ -183,7 +186,21 @@ export class TurnExecutor extends Context.Service<
           let uuidPersisted = args.session.claudeSessionUuid !== null;
           const pump = yield* Effect.forkChild(
             runtime.logs(args.handle).pipe(
-              Stream.tap((chunk) => taskRunRepo.appendLogs(args.taskRunId, chunk)),
+              // The tee is also the SSE log pipeline (FUR-16): every chunk is
+              // persisted AND published live, in arrival order.
+              Stream.tap((chunk) =>
+                taskRunRepo.appendLogs(args.taskRunId, chunk).pipe(
+                  Effect.andThen(
+                    bus.publish(
+                      LogChunk.make({
+                        taskRunId: args.taskRunId,
+                        sessionId: args.session.id,
+                        chunk,
+                      }),
+                    ),
+                  ),
+                ),
+              ),
               agent.parseStream,
               Stream.tap((event) => {
                 if (event._tag !== "SessionStarted" || uuidPersisted) return Effect.void;

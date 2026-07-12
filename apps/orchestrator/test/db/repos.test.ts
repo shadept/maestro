@@ -9,6 +9,7 @@ import { OutboxRepo } from "../../src/db/OutboxRepo.ts";
 import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 import { TaskRunRepo } from "../../src/db/TaskRunRepo.ts";
+import { EventBus } from "../../src/events/EventBus.ts";
 import { startTestDb, type TestDb } from "../support/pg.ts";
 
 type Repos = ProjectRepo | SessionRepo | TaskRunRepo | AuditRepo | DeliveryRepo | OutboxRepo;
@@ -25,7 +26,7 @@ beforeAll(async () => {
     AuditRepo.layer,
     DeliveryRepo.layer,
     OutboxRepo.layer,
-  ).pipe(Layer.provideMerge(Db.layerTest(testDb.connectionString)));
+  ).pipe(Layer.provideMerge(Db.layerTest(testDb.connectionString)), Layer.provide(EventBus.layer));
 });
 
 afterAll(async () => {

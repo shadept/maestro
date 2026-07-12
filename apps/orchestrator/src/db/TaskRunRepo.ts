@@ -1,3 +1,4 @@
+import { TaskRunStateChanged } from "@maestro/api";
 import {
   canTaskRunTransition,
   type DbError,
@@ -13,6 +14,7 @@ import {
 } from "@maestro/domain";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { Context, Effect, Layer, Schema } from "effect";
+import { EventBus } from "../events/EventBus.ts";
 import { Db } from "./Db.ts";
 import { taskRuns } from "./schema/index.ts";
 import { dbTry } from "./support.ts";
@@ -53,6 +55,8 @@ export class TaskRunRepo extends Context.Service<
     readonly listBySession: (
       sessionId: SessionId,
     ) => Effect.Effect<ReadonlyArray<TaskRun>, DbError>;
+    /** Runs not yet settled (PENDING/PROVISIONING/EXECUTING), oldest first — SSE snapshot. */
+    readonly listActive: () => Effect.Effect<ReadonlyArray<TaskRun>, DbError>;
     /**
      * Compare-and-swap state transition (see SessionRepo.transition).
      * Optional fields (cause, deadlines) are set atomically with the state.
@@ -72,6 +76,12 @@ export class TaskRunRepo extends Context.Service<
     TaskRunRepo,
     Effect.gen(function* () {
       const { client } = yield* Db;
+      const bus = yield* EventBus;
+
+      // Repos publish on every successful state write (see SessionRepo for
+      // the FUR-16 decision): create (initial PENDING) and transition.
+      const publishChanged = (taskRun: TaskRun) =>
+        bus.publish(TaskRunStateChanged.make({ taskRun }));
 
       const getById = (operation: string) => (id: TaskRunId) =>
         dbTry(operation)(() => client.select().from(taskRuns).where(eq(taskRuns.id, id))).pipe(
@@ -91,7 +101,9 @@ export class TaskRunRepo extends Context.Service<
             client.insert(taskRuns).values({ sessionId, state: "PENDING", context }).returning(),
           );
           // biome-ignore lint/style/noNonNullAssertion: insert returning always yields one row
-          return toTaskRun(rows[0]!);
+          const taskRun = toTaskRun(rows[0]!);
+          yield* publishChanged(taskRun);
+          return taskRun;
         }),
         get: Effect.fn("TaskRunRepo.get")(function* (id: TaskRunId) {
           return toTaskRun(yield* getById("TaskRunRepo.get")(id));
@@ -106,6 +118,16 @@ export class TaskRunRepo extends Context.Service<
               .select()
               .from(taskRuns)
               .where(eq(taskRuns.sessionId, sessionId))
+              .orderBy(asc(taskRuns.createdAt)),
+          );
+          return rows.map(toTaskRun);
+        }),
+        listActive: Effect.fn("TaskRunRepo.listActive")(function* () {
+          const rows = yield* dbTry("TaskRunRepo.listActive")(() =>
+            client
+              .select()
+              .from(taskRuns)
+              .where(inArray(taskRuns.state, ["PENDING", "PROVISIONING", "EXECUTING"]))
               .orderBy(asc(taskRuns.createdAt)),
           );
           return rows.map(toTaskRun);
@@ -131,7 +153,11 @@ export class TaskRunRepo extends Context.Service<
               .where(and(eq(taskRuns.id, id), inArray(taskRuns.state, [...legalFrom])))
               .returning(),
           );
-          if (rows[0]) return toTaskRun(rows[0]);
+          if (rows[0]) {
+            const taskRun = toTaskRun(rows[0]);
+            yield* publishChanged(taskRun);
+            return taskRun;
+          }
           const current = yield* getById("TaskRunRepo.transition")(id);
           return yield* new StateTransitionError({
             entity: "TaskRun",

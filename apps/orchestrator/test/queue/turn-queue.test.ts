@@ -4,6 +4,7 @@ import { Effect, Layer, type Scope } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { AppConfig } from "../../src/config/AppConfig.ts";
+import { EventBus } from "../../src/events/EventBus.ts";
 import { type TurnJob, TurnQueue } from "../../src/queue/TurnQueue.ts";
 import { startTestDb, type TestDb } from "../support/pg.ts";
 
@@ -30,10 +31,13 @@ beforeEach(async () => {
 const layerFor = (maxConcurrentWorkers: number) =>
   TurnQueue.layer.pipe(
     Layer.provide(
-      AppConfig.layerTest({
-        databaseUrl: testDb.connectionString,
-        maxConcurrentWorkers,
-      }),
+      Layer.mergeAll(
+        EventBus.layer,
+        AppConfig.layerTest({
+          databaseUrl: testDb.connectionString,
+          maxConcurrentWorkers,
+        }),
+      ),
     ),
   );
 

@@ -1,3 +1,4 @@
+import { QueueChanged } from "@maestro/api";
 import {
   type QueueError,
   QueueOperationError,
@@ -7,6 +8,7 @@ import {
 import { Context, Effect, Layer, type Scope } from "effect";
 import { type JobInsert, PgBoss } from "pg-boss";
 import { AppConfig } from "../config/AppConfig.ts";
+import { EventBus } from "../events/EventBus.ts";
 
 /**
  * A queued turn. The pg-boss job carries the TaskRun id as its job id (no
@@ -106,6 +108,31 @@ export class TurnQueue extends Context.Service<
     TurnQueue,
     Effect.gen(function* () {
       const { databaseUrl, maxConcurrentWorkers } = yield* AppConfig;
+      const bus = yield* EventBus;
+
+      // Sessions with a turn running in this process. Only the dispatcher
+      // fiber and handler-completion continuations touch it, and the
+      // admission read-modify-write in `work` is fully synchronous, so plain
+      // Map mutation is race-free on the single-threaded runtime. Hoisted to
+      // service scope so `enqueue` can report the active count too (FUR-16).
+      const running = new Map<SessionId, TaskRunId>();
+
+      // FUR-16 QueueChanged: published on the three queue lifecycle points —
+      // enqueue (job accepted), dispatch (handler started), settle (handler
+      // finished either way). `activeCount` is the in-process running-turn
+      // count at publish time; see the event schema for the payload decision.
+      const publishQueueChanged = (
+        trigger: QueueChanged["trigger"],
+        job: TurnJob,
+      ): Effect.Effect<void> =>
+        bus.publish(
+          QueueChanged.make({
+            trigger,
+            taskRunId: job.taskRunId,
+            sessionId: job.sessionId,
+            activeCount: running.size,
+          }),
+        );
 
       const boss = yield* Effect.acquireRelease(
         Effect.tryPromise({
@@ -141,16 +168,13 @@ export class TurnQueue extends Context.Service<
             try: () => boss.insert(QUEUE, [wire]),
             catch: operationError("TurnQueue.enqueue"),
           });
+          // insert() is a silent no-op on a duplicate id, so a replayed
+          // enqueue publishes a duplicate event — harmless, events carry ids.
+          yield* publishQueueChanged("enqueued", job);
         }),
         work: Effect.fn("TurnQueue.work")(function* (
           handler: (job: TurnJob) => Effect.Effect<void, unknown>,
         ) {
-          // Sessions with a turn running in this process. Only the dispatcher
-          // fiber and handler-completion continuations touch it, and the
-          // admission read-modify-write below is fully synchronous, so plain
-          // Map mutation is race-free on the single-threaded runtime.
-          const running = new Map<SessionId, TaskRunId>();
-
           const settle = (operation: string, promise: () => Promise<unknown>) =>
             Effect.tryPromise({ try: promise, catch: operationError(operation) });
 
@@ -167,7 +191,12 @@ export class TurnQueue extends Context.Service<
               // A failed settlement leaves the job active; heartbeat expiry
               // fails it visibly rather than silently double-running it.
               Effect.catch((error) => Effect.logError("turn settlement failed", error)),
-              Effect.ensuring(Effect.sync(() => running.delete(job.sessionId))),
+              Effect.ensuring(
+                Effect.suspend(() => {
+                  running.delete(job.sessionId);
+                  return publishQueueChanged("settled", job);
+                }),
+              ),
             );
 
           const dispatch = Effect.gen(function* () {
@@ -203,6 +232,7 @@ export class TurnQueue extends Context.Service<
                 sessionId: job.groupId as SessionId,
               };
               running.set(turnJob.sessionId, turnJob.taskRunId);
+              yield* publishQueueChanged("dispatched", turnJob);
               yield* Effect.forkChild(runJob(turnJob));
             }
           });

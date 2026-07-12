@@ -1,5 +1,33 @@
-// Orchestrator entry point — the single composition root.
-// Nothing else in the codebase imports layer implementations; services are
-// wired here and only here. Real wiring lands in M1.4 (config service,
-// composition root, health endpoints).
-console.log("maestro orchestrator: placeholder entry point");
+// The single composition root. This is the ONLY file in the codebase that
+// imports and wires layer implementations — everything else depends on
+// service classes and receives implementations from here.
+import { createServer } from "node:http";
+import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
+import { Effect, Layer, Logger } from "effect";
+import { HttpRouter } from "effect/unstable/http";
+import { AppConfig } from "./config/AppConfig.ts";
+import { Db } from "./db/Db.ts";
+import { HealthRoutes } from "./http/health.ts";
+
+const LoggerLive = Layer.unwrap(
+  Effect.gen(function* () {
+    const { logFormat } = yield* AppConfig;
+    return Logger.layer([logFormat === "json" ? Logger.consoleJson : Logger.consolePretty()]);
+  }),
+);
+
+const ServerLive = Layer.unwrap(
+  Effect.gen(function* () {
+    const { port } = yield* AppConfig;
+    return NodeHttpServer.layer(createServer, { port });
+  }),
+);
+
+const AppLive = HttpRouter.serve(HealthRoutes).pipe(
+  Layer.provide(ServerLive),
+  Layer.provide(Db.layer),
+  Layer.provide(LoggerLive),
+  Layer.provide(AppConfig.layer),
+);
+
+NodeRuntime.runMain(Layer.launch(AppLive));

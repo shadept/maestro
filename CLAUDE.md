@@ -62,6 +62,18 @@ All four gates (`install`, `typecheck`, `lint`, `test`) must pass before every c
   `allowImportingTsExtensions` make tsc, tsx, vitest, and Vite all consume it without a build
   step. Import paths inside the repo use explicit `.ts` extensions.
 
+## Core Priorities
+
+Performance first. Profile hot paths, avoid N+1 queries, use async properly for I/O-bound work, watch memory on large batches.
+
+Reliability first. Keep behavior predictable under load and during failures. Handlers must be idempotent; replays must be safe.
+
+If a tradeoff is required, choose correctness and robustness over short-term convenience.
+
+## Maintainability
+
+Long term maintainability is a core priority. If you add new functionality, first check if there is shared logic that can be extracted to a separate module. Duplicate logic across multiple files is a code smell and should be avoided. Don't be afraid to change existing code. Don't take shortcuts by just adding local logic to solve a problem.
+
 ## Effect v4 conventions
 
 **Naming churn warning:** the tech-requirements doc says `ServiceMap.Service`; in

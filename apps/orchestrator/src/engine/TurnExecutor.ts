@@ -20,6 +20,7 @@ import { SessionRepo } from "../db/SessionRepo.ts";
 import { TaskRunRepo } from "../db/TaskRunRepo.ts";
 import { EventBus } from "../events/EventBus.ts";
 import { GitCache } from "../git/GitCache.ts";
+import { forgeCredentials } from "../git/git-command.ts";
 import { OutboundGit } from "../git/OutboundGit.ts";
 import { WorktreeManager } from "../git/WorktreeManager.ts";
 import type { TurnJob } from "../queue/TurnQueue.ts";
@@ -250,7 +251,13 @@ export class TurnExecutor extends Context.Service<
         const context = yield* taskRunRepo.getContext(job.taskRunId);
 
         yield* taskRunRepo.transition(job.taskRunId, "PROVISIONING");
-        const cachePath = yield* gitCache.ensureClone(project);
+        // Private repos: the orchestrator token authenticates the clone via
+        // per-invocation GIT_CONFIG_* env (FUR-10 mechanism — never argv,
+        // never stored config). Absent token = anonymous, public repos work.
+        const cachePath = yield* gitCache.ensureClone(
+          project,
+          forgeCredentials(config.githubToken),
+        );
         if (project.localCachePath === null) {
           yield* projectRepo.setLocalCachePath(project.id, cachePath);
         }

@@ -28,6 +28,17 @@ const credentialEnv = (credentials: Option.Option<GitCredentials>): Record<strin
     },
   });
 
+/**
+ * Shapes the orchestrator's optional forge token (AppConfig.githubToken) as
+ * per-invocation git credentials. The single mapping used by every remote
+ * operation — clone/fetch on the inbound side, push on the outbound side —
+ * so a configured token authenticates everywhere and an absent one degrades
+ * to anonymous access (public repos).
+ */
+export const forgeCredentials = (
+  token: Option.Option<Redacted.Redacted>,
+): GitCredentials | undefined => Option.getOrUndefined(Option.map(token, (t) => ({ token: t })));
+
 export interface GitCommandOptions {
   readonly cwd?: string;
   readonly credentials?: GitCredentials;

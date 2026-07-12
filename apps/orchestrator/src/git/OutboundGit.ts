@@ -1,10 +1,10 @@
 import type { DbError, ForgeError, GitError, Project, Session, TaskContext } from "@maestro/domain";
-import { Context, Effect, Layer, Option } from "effect";
+import { Context, Effect, Layer } from "effect";
 import { AppConfig } from "../config/AppConfig.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
 import { GitHubForge } from "../forge/GitHubForge.ts";
 import { GitCache } from "./GitCache.ts";
-import { type GitCommandOptions, runGit } from "./git-command.ts";
+import { forgeCredentials, type GitCommandOptions, runGit } from "./git-command.ts";
 import { RepoLocks } from "./RepoLocks.ts";
 
 export type PublishError = GitError | ForgeError | DbError;
@@ -94,13 +94,10 @@ export class OutboundGit extends Context.Service<
           const { session, project, context } = args;
           const gitDir = gitCache.cachePathFor(project);
           const branch = session.gitBranch;
-          const credentials = Option.map(config.githubToken, (token) => ({ token }));
+          const credentials = forgeCredentials(config.githubToken);
           const remoteOptions: GitCommandOptions = {
             cwd: gitDir,
-            ...Option.match(credentials, {
-              onNone: () => ({}),
-              onSome: (c) => ({ credentials: c }),
-            }),
+            ...(credentials !== undefined && { credentials }),
           };
           // read-only, and RepoLocks is not reentrant — resolve before locking
           const baseBranch =

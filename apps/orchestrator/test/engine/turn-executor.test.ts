@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ForgeApiError, type TaskContext, type TaskRun, type TaskRunState } from "@maestro/domain";
-import { Effect, Layer, PubSub, type Scope } from "effect";
+import { Effect, Layer, Option, PubSub, Redacted, type Scope } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AgentContract } from "../../src/agent/AgentContract.ts";
@@ -23,7 +23,7 @@ import { RepoLocks } from "../../src/git/RepoLocks.ts";
 import { branchNameFor, WorktreeManager } from "../../src/git/WorktreeManager.ts";
 import { TurnQueue } from "../../src/queue/TurnQueue.ts";
 import { WorkerRuntime } from "../../src/runtime/WorkerRuntime.ts";
-import { worktreeDir } from "../../src/storage/paths.ts";
+import { repoCacheDir, worktreeDir } from "../../src/storage/paths.ts";
 import {
   buildFakeAgentImage,
   cleanStorageViaContainer,
@@ -46,6 +46,33 @@ let testDb: TestDb;
 let root: string;
 let storageRoot: string;
 let originDir: string;
+let gitShimLog: string;
+
+const ORCHESTRATOR_TOKEN = "SUPER-SECRET-TOKEN";
+
+/**
+ * Transparent `git` shim prepended to PATH: records argv + every GIT_CONFIG_*
+ * env var per invocation, then execs the real git. This is how the suite
+ * proves credentials reach remote operations via per-invocation env (the
+ * FUR-10 mechanism) and never via argv.
+ */
+const installGitShim = async () => {
+  const realGit = execFileSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+  gitShimLog = path.join(root, "git-shim.log");
+  const shimDir = path.join(root, "git-shim-bin");
+  await mkdir(shimDir, { recursive: true });
+  await writeFile(
+    path.join(shimDir, "git"),
+    [
+      "#!/bin/sh",
+      `{ printf 'argv: %s\\n' "$*"; env | grep '^GIT_CONFIG' || true; echo '==='; } >> '${gitShimLog}'`,
+      `exec '${realGit}' "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${shimDir}:${process.env.PATH}`;
+};
 
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", args, { cwd, encoding: "utf8" }).trimEnd();
@@ -81,6 +108,9 @@ const makeLayer = (
         workerImage: FAKE_AGENT_IMAGE,
         turnTimeoutSeconds,
         maxConcurrentWorkers: 2,
+        // a file:// origin ignores credentials, but they must be OFFERED to
+        // the clone (asserted via the git shim) and must never persist
+        githubToken: Option.some(Redacted.make(ORCHESTRATOR_TOKEN)),
       }),
     ),
     Layer.orDie,
@@ -138,6 +168,7 @@ beforeAll(async () => {
   // the identity mounts must match them exactly (macOS tmpdir is a symlink).
   root = await realpath(await mkdtemp(path.join(tmpdir(), "maestro-executor-")));
   storageRoot = path.join(root, "storage");
+  await installGitShim();
 
   originDir = path.join(root, "origin");
   execFileSync("git", ["init", "-b", "main", originDir]);
@@ -160,7 +191,7 @@ afterAll(async () => {
 
 describe("TurnExecutor", () => {
   it("happy path via the queue: full state walk to COMPLETED, logs, session uuid, outbox", async () => {
-    const { session, taskRun } = await run(setupTurn("FUR-101", "Please do the work."));
+    const { project, session, taskRun } = await run(setupTurn("FUR-101", "Please do the work."));
 
     const observed: TaskRunState[] = [];
     await run(
@@ -254,6 +285,28 @@ describe("TurnExecutor", () => {
     expect(createCall?.args.title).toBe("FUR-101: Ticket FUR-101");
     expect(settled.session.prNumber).toBe(payload.pr?.number);
     expect(settled.session.prUrl).toBe(payload.pr?.url);
+
+    // Private-repo provisioning: the orchestrator token authenticated the
+    // cache clone via per-invocation GIT_CONFIG_* env — never argv, never
+    // stored config (the shim saw every git invocation of this turn).
+    const expectedHeader = `Authorization: Basic ${Buffer.from(
+      `x-access-token:${ORCHESTRATOR_TOKEN}`,
+    ).toString("base64")}`;
+    const invocations = (await readFile(gitShimLog, "utf8")).split("===");
+    const cloneInvocations = invocations.filter((block) => block.includes("argv: clone"));
+    expect(cloneInvocations.length).toBeGreaterThan(0);
+    for (const invocation of cloneInvocations) {
+      expect(invocation).toContain(`GIT_CONFIG_VALUE_0=${expectedHeader}`);
+    }
+    // the raw token never crossed a git process boundary in the clear
+    expect(invocations.join("")).not.toContain(ORCHESTRATOR_TOKEN);
+    // and never landed at rest in the cached clone's config
+    const cacheConfig = await readFile(
+      path.join(repoCacheDir(storageRoot, project.id), "config"),
+      "utf8",
+    );
+    expect(cacheConfig).not.toContain(ORCHESTRATOR_TOKEN);
+    expect(cacheConfig.toLowerCase()).not.toContain("authorization");
   });
 
   it("no-commit turn: COMPLETED, publish skipped silently, callback without PR", async () => {

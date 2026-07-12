@@ -7,7 +7,7 @@ import {
   type ResourceTiers,
 } from "@maestro/domain";
 import { eq } from "drizzle-orm";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer, Option, Schema } from "effect";
 import { Db } from "./Db.ts";
 import { projects } from "./schema/index.ts";
 import { dbTry } from "./support.ts";
@@ -17,6 +17,7 @@ const toProject = (row: typeof projects.$inferSelect): Project => decode(row);
 
 export interface ProjectCreate {
   readonly repoGitUrl: string;
+  readonly linearTeamKey?: string;
   readonly gitConventions?: GitConventionOverrides;
   readonly resources?: ResourceTiers;
 }
@@ -26,6 +27,8 @@ export class ProjectRepo extends Context.Service<
   {
     readonly create: (input: ProjectCreate) => Effect.Effect<Project, DbError>;
     readonly get: (id: ProjectId) => Effect.Effect<Project, DbError>;
+    /** The project a Linear team's webhooks route to (FUR-18 ingest lookup). */
+    readonly findByLinearTeamKey: (key: string) => Effect.Effect<Option.Option<Project>, DbError>;
     readonly list: Effect.Effect<ReadonlyArray<Project>, DbError>;
     readonly setLocalCachePath: (id: ProjectId, path: string) => Effect.Effect<Project, DbError>;
   }
@@ -41,6 +44,7 @@ export class ProjectRepo extends Context.Service<
               .insert(projects)
               .values({
                 repoGitUrl: input.repoGitUrl,
+                linearTeamKey: input.linearTeamKey ?? null,
                 gitConventions: input.gitConventions ?? {},
                 resources: input.resources ?? {},
               })
@@ -58,6 +62,12 @@ export class ProjectRepo extends Context.Service<
             return yield* new EntityNotFoundError({ entity: "Project", entityId: id });
           }
           return toProject(row);
+        }),
+        findByLinearTeamKey: Effect.fn("ProjectRepo.findByLinearTeamKey")(function* (key: string) {
+          const rows = yield* dbTry("ProjectRepo.findByLinearTeamKey")(() =>
+            client.select().from(projects).where(eq(projects.linearTeamKey, key)),
+          );
+          return Option.map(Option.fromNullishOr(rows[0]), toProject);
         }),
         list: Effect.fn("ProjectRepo.list")(function* () {
           const rows = yield* dbTry("ProjectRepo.list")(() => client.select().from(projects));

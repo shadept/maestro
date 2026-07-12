@@ -53,6 +53,7 @@ beforeAll(async () => {
   project = decodeProject({
     id: uuid(1),
     repoGitUrl: `file://${originDir}`,
+    linearTeamKey: null,
     localCachePath: null,
     gitConventions: {},
     resources: {},

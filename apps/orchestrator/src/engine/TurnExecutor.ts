@@ -1,17 +1,17 @@
 import { mkdir } from "node:fs/promises";
 import { LogChunk } from "@maestro/api";
-import type {
-  DbError,
-  ForgeError,
-  GitError,
-  RuntimeError,
-  Session,
+import {
+  type DbError,
+  type ForgeError,
+  type GitError,
+  type RuntimeError,
+  type Session,
   SessionId,
   TaskRunCause,
   TaskRunId,
   TicketReference,
 } from "@maestro/domain";
-import { Context, Effect, Fiber, Layer, Stream } from "effect";
+import { Context, Effect, Fiber, Layer, Schema, Stream } from "effect";
 import { AgentContract, type AgentEvent } from "../agent/AgentContract.ts";
 import { AppConfig } from "../config/AppConfig.ts";
 import { OutboxRepo } from "../db/OutboxRepo.ts";
@@ -35,20 +35,23 @@ export interface PrReference {
 }
 
 /**
- * Outbox payload written when a turn settles. M1.13 drains these entries and
- * posts them back to the ticketing platform identified by `ticket.source`.
+ * Outbox payload written when a turn settles. The callback worker (FUR-18)
+ * drains these entries and posts them back to the ticketing platform
+ * identified by `ticket.source`. A Schema (not just a type) because the
+ * worker decodes it back out of the outbox's jsonb column.
  */
-export interface TurnOutcomePayload {
-  readonly kind: "turn-completed" | "turn-failed";
-  readonly taskRunId: TaskRunId;
-  readonly sessionId: SessionId;
-  readonly ticket: TicketReference;
+export const TurnOutcomePayload = Schema.Struct({
+  kind: Schema.Literals(["turn-completed", "turn-failed"]),
+  taskRunId: TaskRunId,
+  sessionId: SessionId,
+  ticket: TicketReference,
   /** Final agent text on completion; failure summary on failure. */
-  readonly summary: string;
-  readonly cause: TaskRunCause | null;
+  summary: Schema.String,
+  cause: Schema.NullOr(TaskRunCause),
   /** The session's PR, so the ticket comment links it. Null until a first push. */
-  readonly pr: PrReference | null;
-}
+  pr: Schema.NullOr(Schema.Struct({ number: Schema.Number, url: Schema.String })),
+});
+export type TurnOutcomePayload = typeof TurnOutcomePayload.Type;
 
 /** The session's persisted PR reference, if the orchestrator has pushed before. */
 const prOf = (session: Session): PrReference | null =>

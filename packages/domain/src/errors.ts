@@ -92,6 +92,19 @@ export class QueueOperationError extends Schema.TaggedErrorClass<QueueOperationE
 
 export type QueueError = QueueOperationError;
 
+// ── callback area ──────────────────────────────────────────────────────────
+
+export class CallbackDeliveryError extends Schema.TaggedErrorClass<CallbackDeliveryError>()(
+  "CallbackDeliveryError",
+  {
+    /** Delivery target, e.g. "linear". */
+    target: Schema.String,
+    reason: Schema.String,
+  },
+) {}
+
+export type CallbackError = CallbackDeliveryError;
+
 // ── ingestion area ─────────────────────────────────────────────────────────
 
 export class WebhookVerificationError extends Schema.TaggedErrorClass<WebhookVerificationError>()(

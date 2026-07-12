@@ -1,0 +1,42 @@
+{
+  "action": "create",
+  "actor": {
+    "id": "3f65a1d2-8c4b-4e6f-9a1b-5d2e7c8f9a01",
+    "name": "João Furtado",
+    "type": "user"
+  },
+  "createdAt": "2026-07-10T12:05:00.000Z",
+  "data": {
+    "id": "7c2d9e4f-1a3b-4c5d-8e6f-9a0b1c2d3e07",
+    "createdAt": "2026-07-10T12:05:00.000Z",
+    "updatedAt": "2026-07-10T12:05:00.000Z",
+    "body": "Also update the operator handbook, please.",
+    "issueId": "9a3b5f80-1e2a-4b0e-9f3d-2c7a8f1e6b01",
+    "userId": "3f65a1d2-8c4b-4e6f-9a1b-5d2e7c8f9a01",
+    "reactionData": [],
+    "issue": {
+      "id": "9a3b5f80-1e2a-4b0e-9f3d-2c7a8f1e6b01",
+      "teamId": "b7a29c14-6d3e-4f8a-8b2c-1e9d0f3a5c02",
+      "url": "https://linear.app/acme/issue/FUR-42/fix-the-flux-capacitor",
+      "identifier": "FUR-42",
+      "title": "Fix the flux capacitor",
+      "team": {
+        "id": "b7a29c14-6d3e-4f8a-8b2c-1e9d0f3a5c02",
+        "key": "FUR",
+        "name": "Furtado Lab"
+      }
+    },
+    "user": {
+      "id": "3f65a1d2-8c4b-4e6f-9a1b-5d2e7c8f9a01",
+      "name": "João Furtado",
+      "url": "https://linear.app/acme/profiles/joao",
+      "email": "joao@example.com",
+      "avatarUrl": null
+    }
+  },
+  "url": "https://linear.app/acme/issue/FUR-42/fix-the-flux-capacitor#comment-7c2d9e4f",
+  "type": "Comment",
+  "organizationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c05",
+  "webhookTimestamp": 0,
+  "webhookId": "f0e1d2c3-b4a5-4968-8776-655443322106"
+}

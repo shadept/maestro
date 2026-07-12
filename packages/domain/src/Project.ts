@@ -28,6 +28,11 @@ export const Project = Schema.Struct({
   id: ProjectId,
   /** Credential-free git URL; credentials are injected per-invocation, never stored. */
   repoGitUrl: Schema.NonEmptyString,
+  /**
+   * Linear team key ("FUR" in "FUR-42") that routes this team's webhooks to
+   * this project (FUR-18). Null = project not reachable from Linear ingest.
+   */
+  linearTeamKey: Schema.NullOr(Schema.NonEmptyString),
   /** Master clone location under the orchestrator storage root; null until first clone. */
   localCachePath: Schema.NullOr(Schema.String),
   gitConventions: GitConventionOverrides,

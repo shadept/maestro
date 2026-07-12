@@ -1,6 +1,6 @@
 import type { DbError, TaskRunId } from "@maestro/domain";
 import { EntityNotFoundError } from "@maestro/domain";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, lte, or, sql } from "drizzle-orm";
 import { Context, Effect, Layer } from "effect";
 import { Db } from "./Db.ts";
 import { outbox } from "./schema/index.ts";
@@ -20,10 +20,19 @@ export class OutboxRepo extends Context.Service<
   {
     /** Idempotent enqueue: an existing idempotency key is a no-op. */
     readonly enqueue: (input: OutboxEnqueue) => Effect.Effect<OutboxEntry, DbError>;
+    /** PENDING entries due now (next_attempt_at unset or reached), oldest first. */
     readonly listPending: (limit: number) => Effect.Effect<ReadonlyArray<OutboxEntry>, DbError>;
     readonly markSent: (id: string) => Effect.Effect<void, DbError>;
-    /** Records a delivery failure; the entry stays PENDING for retry. */
-    readonly recordFailure: (id: string, error: string) => Effect.Effect<void, DbError>;
+    /**
+     * Records a delivery failure; the entry stays PENDING for retry.
+     * `nextAttemptAt` (persisted, so backoff survives restarts) gates when
+     * `listPending` surfaces the row again.
+     */
+    readonly recordFailure: (
+      id: string,
+      error: string,
+      nextAttemptAt?: Date,
+    ) => Effect.Effect<void, DbError>;
   }
 >()("maestro/db/OutboxRepo") {
   static readonly layer = Layer.effect(
@@ -56,7 +65,12 @@ export class OutboxRepo extends Context.Service<
             client
               .select()
               .from(outbox)
-              .where(eq(outbox.status, "PENDING"))
+              .where(
+                and(
+                  eq(outbox.status, "PENDING"),
+                  or(isNull(outbox.nextAttemptAt), lte(outbox.nextAttemptAt, new Date())),
+                ),
+              )
               .orderBy(asc(outbox.createdAt))
               .limit(limit),
           );
@@ -73,11 +87,19 @@ export class OutboxRepo extends Context.Service<
             return yield* new EntityNotFoundError({ entity: "OutboxEntry", entityId: id });
           }
         }),
-        recordFailure: Effect.fn("OutboxRepo.recordFailure")(function* (id: string, error: string) {
+        recordFailure: Effect.fn("OutboxRepo.recordFailure")(function* (
+          id: string,
+          error: string,
+          nextAttemptAt?: Date,
+        ) {
           const rows = yield* dbTry("OutboxRepo.recordFailure")(() =>
             client
               .update(outbox)
-              .set({ attempts: sql`${outbox.attempts} + 1`, lastError: error })
+              .set({
+                attempts: sql`${outbox.attempts} + 1`,
+                lastError: error,
+                nextAttemptAt: nextAttemptAt ?? null,
+              })
               .where(eq(outbox.id, id))
               .returning({ id: outbox.id }),
           );

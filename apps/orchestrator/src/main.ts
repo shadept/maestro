@@ -3,11 +3,15 @@
 // service classes and receives implementations from here.
 import { createServer } from "node:http";
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import { Effect, Layer, Logger, Schedule } from "effect";
+import { Context, Deferred, Effect, Layer, Logger, Schedule } from "effect";
 import { HttpRouter } from "effect/unstable/http";
 import { AgentContract } from "./agent/AgentContract.ts";
+import { CallbackWorker } from "./callback/CallbackWorker.ts";
+import { LinearCallback } from "./callback/LinearCallback.ts";
 import { AppConfig } from "./config/AppConfig.ts";
+import { AuditRepo } from "./db/AuditRepo.ts";
 import { Db } from "./db/Db.ts";
+import { DeliveryRepo } from "./db/DeliveryRepo.ts";
 import { OutboxRepo } from "./db/OutboxRepo.ts";
 import { ProjectRepo } from "./db/ProjectRepo.ts";
 import { SessionRepo } from "./db/SessionRepo.ts";
@@ -23,6 +27,9 @@ import { AdminApiRoutes } from "./http/admin.ts";
 import { EventsRoutes } from "./http/events.ts";
 import { HealthRoutes } from "./http/health.ts";
 import { StaticRoutes } from "./http/static.ts";
+import { WebhookRoutes } from "./http/webhooks.ts";
+import { IngestPipeline } from "./ingest/IngestPipeline.ts";
+import { LinearIngest } from "./ingest/LinearIngest.ts";
 import { TurnQueue } from "./queue/TurnQueue.ts";
 import { WorkerRuntime } from "./runtime/WorkerRuntime.ts";
 
@@ -45,6 +52,42 @@ const ReposLive = Layer.mergeAll(
   SessionRepo.layer,
   TaskRunRepo.layer,
   OutboxRepo.layer,
+  DeliveryRepo.layer,
+  AuditRepo.layer,
+);
+
+/**
+ * ONE TurnQueue for the whole process (the FUR-13 single-dispatcher
+ * invariant), lazily connected: pg-boss needs a reachable database to start,
+ * but boot must never depend on the DB (FUR-8). This proxy layer builds
+ * TurnQueue.layer in a background fiber (retrying until Postgres answers)
+ * and parks callers on a Deferred until then — the turn worker just waits,
+ * and a webhook enqueue can only reach the queue after its own DB writes
+ * succeeded, i.e. when the queue is (about to be) up.
+ */
+const TurnQueueLive = Layer.effect(
+  TurnQueue,
+  Effect.gen(function* () {
+    const ready = yield* Deferred.make<TurnQueue["Service"]>();
+    // Resources attach to this layer's scope (inherited by forkScoped), so
+    // the queue lives — and stops — with the app.
+    yield* Effect.forkScoped(
+      Layer.build(TurnQueue.layer).pipe(
+        Effect.flatMap((services) => Deferred.succeed(ready, Context.get(services, TurnQueue))),
+        Effect.tapError((error) =>
+          Effect.logWarning("turn queue failed to start; retrying", error),
+        ),
+        Effect.retry(Schedule.spaced("5 seconds")),
+      ),
+    );
+    const withQueue = <A, E, R>(
+      f: (queue: TurnQueue["Service"]) => Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> => Effect.flatMap(Deferred.await(ready), f);
+    return {
+      enqueue: (job) => withQueue((queue) => queue.enqueue(job)),
+      work: (handler) => withQueue((queue) => queue.work(handler)),
+    };
+  }),
 );
 
 // GitHub is the only M1 forge; a second forge becomes a config-selected layer here.
@@ -59,39 +102,62 @@ const TurnExecutorLive = TurnExecutor.layer.pipe(
 );
 
 /**
- * Registers TurnExecutor as the TurnQueue handler — in the background.
- * TurnQueue's pg-boss needs a reachable database to start, but boot (and the
- * /livez//readyz probes, verified in FUR-8) must never depend on the DB:
- * the worker is forked as a daemon that retries queue startup until the
- * database answers, instead of failing the whole layer build.
+ * Registers TurnExecutor as the TurnQueue handler — in the background. The
+ * shared lazy TurnQueue (above) absorbs the wait for the database, so the
+ * fork simply parks until pg-boss is up and then registers the dispatcher
+ * into this layer's scope; boot (and the /livez//readyz probes, verified in
+ * FUR-8) never depends on the DB.
  */
 const TurnWorkerLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const executor = yield* TurnExecutor;
-    const runWorker = Effect.gen(function* () {
-      const queue = yield* TurnQueue;
-      yield* queue.work(executor.execute);
-      yield* Effect.never; // hold the queue + worker scope for the app lifetime
-    }).pipe(Effect.provide(TurnQueue.layer), Effect.scoped);
-    yield* Effect.forkScoped(
-      runWorker.pipe(
-        Effect.tapError((error) =>
-          Effect.logWarning("turn worker failed to start; retrying", error),
-        ),
-        Effect.retry(Schedule.spaced("5 seconds")),
-      ),
-    );
+    const queue = yield* TurnQueue;
+    yield* Effect.forkScoped(queue.work(executor.execute));
   }),
 ).pipe(Layer.provide(TurnExecutorLive));
 
-// Health probes, the SSE firehose, the admin read API (FUR-16), and the admin
-// UI bundle at `/` (FUR-17). The SSE route and admin handlers pull repos +
-// EventBus from the shared layers below.
-const HttpRoutes = Layer.mergeAll(HealthRoutes, EventsRoutes, AdminApiRoutes, StaticRoutes);
+/**
+ * Drains the callback outbox: turn results become ticket comments (FUR-18).
+ * A plain polling fiber (pg-boss buys nothing here — the outbox table with
+ * its persisted next_attempt_at backoff already is the queue); transient
+ * failures are logged and the next tick retries.
+ */
+const CALLBACK_POLL_MILLIS = 1_000;
+const CallbackWorkerLive = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const worker = yield* CallbackWorker;
+    yield* Effect.forkScoped(
+      worker.drainOnce().pipe(
+        Effect.catch((error) => Effect.logWarning("callback drain failed", error)),
+        Effect.andThen(Effect.sleep(CALLBACK_POLL_MILLIS)),
+        Effect.forever,
+      ),
+    );
+  }),
+).pipe(Layer.provide(CallbackWorker.layer), Layer.provide(LinearCallback.layer));
+
+// Linear webhook ingestion (FUR-18): the Linear adapter maps deliveries into
+// the forge-agnostic pipeline (sessions/turns/queue). M2's generic REST API
+// plugs a second adapter into the same IngestPipeline.
+const IngestLive = LinearIngest.layer.pipe(Layer.provideMerge(IngestPipeline.layer));
+
+// Health probes, the SSE firehose, the admin read API (FUR-16), the admin UI
+// bundle at `/` (FUR-17), and the Linear webhook endpoint (FUR-18). Handlers
+// pull repos + EventBus + ingest services from the shared layers below.
+const HttpRoutes = Layer.mergeAll(
+  HealthRoutes,
+  EventsRoutes,
+  AdminApiRoutes,
+  StaticRoutes,
+  WebhookRoutes,
+);
 
 const AppLive = HttpRouter.serve(HttpRoutes).pipe(
   Layer.merge(TurnWorkerLive),
+  Layer.merge(CallbackWorkerLive),
   Layer.provide(ServerLive),
+  Layer.provide(IngestLive),
+  Layer.provide(TurnQueueLive),
   Layer.provide(ReposLive),
   // One EventBus for the whole process: repos, queue, executor, and the SSE
   // endpoint all see the same instance (layer memoization by reference).

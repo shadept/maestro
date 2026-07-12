@@ -25,6 +25,7 @@ describe("Project", () => {
   const valid = {
     id: uuid(1),
     repoGitUrl: "https://github.com/shadept/maestro",
+    linearTeamKey: "FUR",
     localCachePath: null,
     gitConventions: { branchPattern: "maestro/{ticketKey}", draftPr: true },
     resources: { memoryBaselineMib: 2048 },

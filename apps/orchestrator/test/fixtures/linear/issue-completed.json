@@ -1,0 +1,56 @@
+{
+  "action": "update",
+  "actor": {
+    "id": "3f65a1d2-8c4b-4e6f-9a1b-5d2e7c8f9a01",
+    "name": "João Furtado",
+    "type": "user"
+  },
+  "createdAt": "2026-07-10T18:00:00.000Z",
+  "data": {
+    "id": "9a3b5f80-1e2a-4b0e-9f3d-2c7a8f1e6b01",
+    "createdAt": "2026-07-09T09:00:00.000Z",
+    "updatedAt": "2026-07-10T18:00:00.000Z",
+    "number": 42,
+    "title": "Fix the flux capacitor",
+    "description": "It overheats above 88 mph.\n\nAcceptance: the temperature gauge stays green.",
+    "priority": 2,
+    "teamId": "b7a29c14-6d3e-4f8a-8b2c-1e9d0f3a5c02",
+    "previousIdentifiers": [],
+    "creatorId": "3f65a1d2-8c4b-4e6f-9a1b-5d2e7c8f9a01",
+    "stateId": "0d9c8b7a-6f5e-4d3c-8b2a-1908f7e6d508",
+    "identifier": "FUR-42",
+    "url": "https://linear.app/acme/issue/FUR-42/fix-the-flux-capacitor",
+    "subscriberIds": ["3f65a1d2-8c4b-4e6f-9a1b-5d2e7c8f9a01"],
+    "labelIds": ["cd1e7f3a-2b8c-4a9d-b5e6-0f4a7c1d8e04"],
+    "completedAt": "2026-07-10T18:00:00.000Z",
+    "state": {
+      "id": "0d9c8b7a-6f5e-4d3c-8b2a-1908f7e6d508",
+      "color": "#5e6ad2",
+      "name": "Done",
+      "type": "completed"
+    },
+    "team": {
+      "id": "b7a29c14-6d3e-4f8a-8b2c-1e9d0f3a5c02",
+      "key": "FUR",
+      "name": "Furtado Lab"
+    },
+    "labels": [
+      {
+        "id": "cd1e7f3a-2b8c-4a9d-b5e6-0f4a7c1d8e04",
+        "color": "#5e6ad2",
+        "name": "maestro",
+        "parentId": null
+      }
+    ]
+  },
+  "updatedFrom": {
+    "updatedAt": "2026-07-10T17:59:00.000Z",
+    "stateId": "5e8d1c2b-9f4a-4d7e-8c3b-6a1f2e9d0b03",
+    "completedAt": null
+  },
+  "url": "https://linear.app/acme/issue/FUR-42/fix-the-flux-capacitor",
+  "type": "Issue",
+  "organizationId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c05",
+  "webhookTimestamp": 0,
+  "webhookId": "f0e1d2c3-b4a5-4968-8776-655443322106"
+}

@@ -15,6 +15,8 @@ export const outbox = pgTable("outbox", {
   status: text("status").$type<"PENDING" | "SENT" | "FAILED">().notNull().default("PENDING"),
   attempts: integer("attempts").notNull().default(0),
   lastError: text("last_error"),
+  /** Retry-with-backoff gate (FUR-18): a failed row is not due before this. Survives restarts. */
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
   idempotencyKey: text("idempotency_key").notNull().unique(),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   sentAt: timestamp("sent_at", { withTimezone: true }),

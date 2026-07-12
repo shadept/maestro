@@ -46,6 +46,23 @@ const config = {
   gitAuthorEmail: Config.nonEmptyString("MAESTRO_GIT_AUTHOR_EMAIL").pipe(
     Config.withDefault("maestro@localhost"),
   ),
+  /**
+   * Linear webhook signing secret (FUR-18). Optional at boot — without it the
+   * webhook endpoint rejects every delivery (verification cannot run), nothing
+   * else is affected.
+   */
+  linearWebhookSecret: Config.option(Config.redacted("MAESTRO_LINEAR_WEBHOOK_SECRET")),
+  /** Linear API token for outbound callbacks. Optional at boot — absent token fails per-post. */
+  linearApiToken: Config.option(Config.redacted("MAESTRO_LINEAR_API_TOKEN")),
+  /** Label that hands a Linear issue to Maestro (label-trigger model, FUR-18). */
+  linearTriggerLabel: Config.nonEmptyString("MAESTRO_LINEAR_TRIGGER_LABEL").pipe(
+    Config.withDefault("maestro"),
+  ),
+  /**
+   * Linear user id of the account MAESTRO_LINEAR_API_TOKEN belongs to —
+   * the self-trigger guard: comments by this user never queue turns.
+   */
+  linearBotUserId: Config.option(Config.nonEmptyString("MAESTRO_LINEAR_BOT_USER_ID")),
   /** Subscription session token (preferred) — see Tech Requirements §9. */
   agentOauthToken: Config.option(Config.redacted("CLAUDE_CODE_OAUTH_TOKEN")),
   /** API key fallback for agent auth. */
@@ -76,6 +93,10 @@ export class AppConfig extends Context.Service<
     readonly githubToken: Option.Option<Redacted.Redacted>;
     readonly gitAuthorName: string;
     readonly gitAuthorEmail: string;
+    readonly linearWebhookSecret: Option.Option<Redacted.Redacted>;
+    readonly linearApiToken: Option.Option<Redacted.Redacted>;
+    readonly linearTriggerLabel: string;
+    readonly linearBotUserId: Option.Option<string>;
     readonly agentOauthToken: Option.Option<Redacted.Redacted>;
     readonly agentApiKey: Option.Option<Redacted.Redacted>;
     readonly logFormat: "json" | "pretty";
@@ -101,6 +122,10 @@ export class AppConfig extends Context.Service<
       githubToken: Option.none(),
       gitAuthorName: "Maestro",
       gitAuthorEmail: "maestro@localhost",
+      linearWebhookSecret: Option.none(),
+      linearApiToken: Option.none(),
+      linearTriggerLabel: "maestro",
+      linearBotUserId: Option.none(),
       agentOauthToken: Option.none(),
       agentApiKey: Option.none(),
       logFormat: "pretty",

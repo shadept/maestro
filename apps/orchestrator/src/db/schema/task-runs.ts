@@ -1,11 +1,12 @@
 import type { TaskRunCause, TaskRunState } from "@maestro/domain";
 import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { uuidV7PrimaryKey } from "./columns.ts";
 import { sessions } from "./sessions.ts";
 
 export const taskRuns = pgTable(
   "task_runs",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuidV7PrimaryKey(),
     sessionId: uuid("session_id")
       .notNull()
       .references(() => sessions.id),

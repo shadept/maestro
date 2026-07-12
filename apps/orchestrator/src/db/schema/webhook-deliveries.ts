@@ -1,5 +1,6 @@
 import type { TaskSource } from "@maestro/domain";
-import { jsonb, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { jsonb, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { uuidV7PrimaryKey } from "./columns.ts";
 
 // Idempotent ingestion (Tech Requirements §5): deliveries are deduplicated by
 // (source, delivery id); the payload column is immutable and opaque so
@@ -7,7 +8,7 @@ import { jsonb, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-co
 export const webhookDeliveries = pgTable(
   "webhook_deliveries",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuidV7PrimaryKey(),
     source: text("source").$type<TaskSource>().notNull(),
     deliveryId: text("delivery_id").notNull(),
     payload: jsonb("payload").$type<unknown>().notNull(),

@@ -1,5 +1,5 @@
 CREATE TABLE "audit_logs" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"actor" text NOT NULL,
 	"action" text NOT NULL,
 	"target_entity" text NOT NULL,
@@ -8,7 +8,7 @@ CREATE TABLE "audit_logs" (
 );
 --> statement-breakpoint
 CREATE TABLE "outbox" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"task_run_id" uuid,
 	"target" text NOT NULL,
 	"payload" jsonb NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE "outbox" (
 );
 --> statement-breakpoint
 CREATE TABLE "projects" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"repo_git_url" text NOT NULL,
 	"local_cache_path" text,
 	"git_conventions" jsonb DEFAULT '{}'::jsonb NOT NULL,
@@ -31,7 +31,7 @@ CREATE TABLE "projects" (
 );
 --> statement-breakpoint
 CREATE TABLE "sessions" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"project_id" uuid NOT NULL,
 	"ticket_source" text NOT NULL,
 	"ticket_external_id" text NOT NULL,
@@ -43,7 +43,7 @@ CREATE TABLE "sessions" (
 );
 --> statement-breakpoint
 CREATE TABLE "task_runs" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"session_id" uuid NOT NULL,
 	"state" text NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -55,7 +55,7 @@ CREATE TABLE "task_runs" (
 );
 --> statement-breakpoint
 CREATE TABLE "webhook_deliveries" (
-	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"id" uuid PRIMARY KEY NOT NULL,
 	"source" text NOT NULL,
 	"delivery_id" text NOT NULL,
 	"payload" jsonb NOT NULL,

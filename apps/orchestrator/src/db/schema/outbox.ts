@@ -1,4 +1,5 @@
 import { integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { uuidV7PrimaryKey } from "./columns.ts";
 import { taskRuns } from "./task-runs.ts";
 
 // Callback outbox (Tech Requirements §16): turn results are committed here in
@@ -6,7 +7,7 @@ import { taskRuns } from "./task-runs.ts";
 // platform with retries — a crash between "posted" and "marked COMPLETED"
 // never duplicates comments or loses results.
 export const outbox = pgTable("outbox", {
-  id: uuid("id").primaryKey().defaultRandom(),
+  id: uuidV7PrimaryKey(),
   taskRunId: uuid("task_run_id").references(() => taskRuns.id),
   /** Delivery target, e.g. "linear" or a generic-API callback URL reference. */
   target: text("target").notNull(),

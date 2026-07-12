@@ -31,6 +31,8 @@ describe("schema", () => {
       .values({ repoGitUrl: "https://github.com/shadept/maestro" })
       .returning();
     expect(project?.id).toBeTruthy();
+    // ids are minted application-side as UUIDv7 (time-ordered)
+    expect(project?.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-/);
     expect(project?.gitConventions).toEqual({});
 
     const [session] = await db

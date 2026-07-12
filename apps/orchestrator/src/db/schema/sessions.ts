@@ -1,11 +1,12 @@
 import type { SessionState, TaskSource } from "@maestro/domain";
 import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { uuidV7PrimaryKey } from "./columns.ts";
 import { projects } from "./projects.ts";
 
 export const sessions = pgTable(
   "sessions",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: uuidV7PrimaryKey(),
     projectId: uuid("project_id")
       .notNull()
       .references(() => projects.id),

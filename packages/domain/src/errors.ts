@@ -46,7 +46,17 @@ export class WorkerSpawnError extends Schema.TaggedErrorClass<WorkerSpawnError>(
   { reason: Schema.String },
 ) {}
 
-export type RuntimeError = WorkerSpawnError;
+export class WorkerNotFoundError extends Schema.TaggedErrorClass<WorkerNotFoundError>()(
+  "WorkerNotFoundError",
+  { workerId: Schema.String },
+) {}
+
+export class NotImplementedError extends Schema.TaggedErrorClass<NotImplementedError>()(
+  "NotImplementedError",
+  { feature: Schema.String },
+) {}
+
+export type RuntimeError = WorkerSpawnError | WorkerNotFoundError | NotImplementedError;
 
 // ── ingestion area ─────────────────────────────────────────────────────────
 

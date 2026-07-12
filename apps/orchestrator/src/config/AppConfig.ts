@@ -11,6 +11,10 @@ const config = {
   runtimeTemplate: Config.nonEmptyString("MAESTRO_RUNTIME_TEMPLATE").pipe(
     Config.withDefault("docker run"),
   ),
+  /** Which WorkerRuntime layer the composition root selects. */
+  runtimeMode: Config.literals(["local-cli", "k8s"], "MAESTRO_RUNTIME_MODE").pipe(
+    Config.withDefault("local-cli" as const),
+  ),
   maxConcurrentWorkers: Config.int("MAESTRO_MAX_CONCURRENT_WORKERS").pipe(Config.withDefault(2)),
   cooldownMinutes: Config.int("MAESTRO_COOLDOWN_MINUTES").pipe(Config.withDefault(60)),
   retentionDays: Config.int("MAESTRO_RETENTION_DAYS").pipe(Config.withDefault(14)),
@@ -31,6 +35,7 @@ export class AppConfig extends Context.Service<
     readonly databaseUrl: string;
     readonly storageRoot: string;
     readonly runtimeTemplate: string;
+    readonly runtimeMode: "local-cli" | "k8s";
     readonly maxConcurrentWorkers: number;
     readonly cooldownMinutes: number;
     readonly retentionDays: number;
@@ -49,6 +54,7 @@ export class AppConfig extends Context.Service<
       databaseUrl: "postgresql://localhost:5432/maestro-test",
       storageRoot: "/tmp/maestro-test",
       runtimeTemplate: "docker run",
+      runtimeMode: "local-cli",
       maxConcurrentWorkers: 2,
       cooldownMinutes: 60,
       retentionDays: 14,

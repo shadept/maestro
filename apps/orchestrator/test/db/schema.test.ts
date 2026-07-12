@@ -50,8 +50,20 @@ describe("schema", () => {
 
     const [run] = await db
       .insert(taskRuns)
-      // biome-ignore lint/style/noNonNullAssertion: asserted above
-      .values({ sessionId: session!.id, state: "PENDING" })
+      .values({
+        // biome-ignore lint/style/noNonNullAssertion: asserted above
+        sessionId: session!.id,
+        state: "PENDING",
+        context: {
+          source: "linear",
+          ticket: { source: "linear", externalId: "FUR-7" },
+          actor: "shade",
+          title: "A ticket",
+          body: "Do the thing.",
+          deliveryId: "d-7",
+          payload: {},
+        },
+      })
       .returning();
     expect(run?.cause).toBeNull();
 

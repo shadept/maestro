@@ -1,0 +1,290 @@
+import { mkdir } from "node:fs/promises";
+import type {
+  DbError,
+  GitError,
+  RuntimeError,
+  Session,
+  SessionId,
+  TaskRunCause,
+  TaskRunId,
+  TicketReference,
+} from "@maestro/domain";
+import { Context, Effect, Fiber, Layer, Stream } from "effect";
+import { AgentContract, type AgentEvent } from "../agent/AgentContract.ts";
+import { AppConfig } from "../config/AppConfig.ts";
+import { OutboxRepo } from "../db/OutboxRepo.ts";
+import { ProjectRepo } from "../db/ProjectRepo.ts";
+import { SessionRepo } from "../db/SessionRepo.ts";
+import { TaskRunRepo } from "../db/TaskRunRepo.ts";
+import { GitCache } from "../git/GitCache.ts";
+import { WorktreeManager } from "../git/WorktreeManager.ts";
+import type { TurnJob } from "../queue/TurnQueue.ts";
+import { type ExitInfo, WorkerRuntime } from "../runtime/WorkerRuntime.ts";
+import { sessionConfigDir } from "../storage/paths.ts";
+
+export type TurnExecutionError = DbError | GitError | RuntimeError;
+
+/**
+ * Outbox payload written when a turn settles. M1.13 drains these entries and
+ * posts them back to the ticketing platform identified by `ticket.source`.
+ */
+export interface TurnOutcomePayload {
+  readonly kind: "turn-completed" | "turn-failed";
+  readonly taskRunId: TaskRunId;
+  readonly sessionId: SessionId;
+  readonly ticket: TicketReference;
+  /** Final agent text on completion; failure summary on failure. */
+  readonly summary: string;
+  readonly cause: TaskRunCause | null;
+}
+
+type ResultEvent = Extract<AgentEvent, { _tag: "Result" }>;
+
+/**
+ * MVP worker mount strategy (resolves the FUR-10 WATCH item):
+ *
+ * Worktree, parent bare repo, and session config dir are all mounted at their
+ * HOST-IDENTICAL absolute paths ("identity mounts"). The worktree's `.git`
+ * file and the bare repo's `worktrees/<id>/gitdir` metadata both contain
+ * absolute host paths pointing at each other; identity mounting makes them
+ * resolve unchanged inside the container, so plain `git commit` just works.
+ *
+ * DELIBERATE PRD DEVIATION: PRD §3.2 wants the parent .git mounted read-only,
+ * but a worktree commit must write objects and refs into the parent bare repo
+ * — read-only would break the agent's ability to commit at all. MVP mounts
+ * the bare repo read-write and accepts that a worker can see (not push —
+ * workers hold no credentials) other sessions' refs on the same project.
+ * Hardening (per-session object spool / alternates) is deferred to M1.16+.
+ */
+const identityMounts = (paths: {
+  readonly worktreePath: string;
+  readonly gitDir: string;
+  readonly configDir: string;
+}) =>
+  [paths.worktreePath, paths.gitDir, paths.configDir].map((p) => ({
+    hostPath: p,
+    containerPath: p,
+    readOnly: false,
+  }));
+
+/** Runtime kill/timeout classification wins; a clean exit still needs an ok Result. */
+const classifyOutcome = (exit: ExitInfo, result: ResultEvent | null): TaskRunCause | null =>
+  exit.cause ?? (exit.exitCode === 0 && result?.ok === true ? null : "ERROR");
+
+/**
+ * The end-to-end turn pipeline (Tech Requirements §8, MVP cold-container
+ * model): TaskRun PENDING → PROVISIONING (clone + worktree + config dir) →
+ * EXECUTING (worker runs the AgentContract command; logs stream to the
+ * TaskRun row and the stream-json parser) → COMPLETED/FAILED + outbox entry,
+ * session back to WARM_IDLE (a DB state only — the container has exited).
+ *
+ * Failure semantics: an agent failure (non-zero exit, timeout, kill) settles
+ * the TaskRun as FAILED with its cause and SUCCEEDS as an effect — the turn
+ * pipeline did its job. `execute` only fails on orchestration errors
+ * (git/db/runtime), after best-effort FAILED marking. No auto-retry ever;
+ * the worktree is always preserved untouched for the next explicit resume.
+ */
+export class TurnExecutor extends Context.Service<
+  TurnExecutor,
+  {
+    /** Executes one queued turn; registered as the TurnQueue handler. */
+    readonly execute: (job: TurnJob) => Effect.Effect<void, TurnExecutionError>;
+  }
+>()("maestro/engine/TurnExecutor") {
+  static readonly layer = Layer.effect(
+    TurnExecutor,
+    Effect.gen(function* () {
+      const config = yield* AppConfig;
+      const projectRepo = yield* ProjectRepo;
+      const sessionRepo = yield* SessionRepo;
+      const taskRunRepo = yield* TaskRunRepo;
+      const outboxRepo = yield* OutboxRepo;
+      const gitCache = yield* GitCache;
+      const worktreeManager = yield* WorktreeManager;
+      const runtime = yield* WorkerRuntime;
+      const agent = yield* AgentContract;
+
+      const evictableAt = () => new Date(Date.now() + config.cooldownMinutes * 60_000);
+
+      const enqueueOutcome = (payload: TurnOutcomePayload) =>
+        outboxRepo.enqueue({
+          taskRunId: payload.taskRunId,
+          target: payload.ticket.source,
+          payload,
+          // one outcome per turn — replayed settlements are no-ops
+          idempotencyKey: `turn-result:${payload.taskRunId}`,
+        });
+
+      // WARM_IDLE is where every settled turn leaves its session. Sessions
+      // spend the turn WARM_IDLE already in MVP (eviction lands later), so
+      // only a DORMANT_SAVED rehydration needs an actual transition.
+      const settleSession = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const fresh = yield* sessionRepo.get(sessionId);
+          if (fresh.state === "DORMANT_SAVED") {
+            yield* sessionRepo.transition(sessionId, "WARM_IDLE");
+          }
+          yield* sessionRepo.touchActivity(sessionId);
+        });
+
+      const settleFailed = (args: {
+        readonly job: TurnJob;
+        readonly ticket: TicketReference;
+        readonly cause: TaskRunCause;
+        readonly summary: string;
+        readonly resultText?: string;
+      }) =>
+        Effect.gen(function* () {
+          yield* taskRunRepo.transition(args.job.taskRunId, "FAILED", {
+            cause: args.cause,
+            evictableAfter: evictableAt(),
+            ...(args.resultText !== undefined && { resultText: args.resultText }),
+          });
+          yield* enqueueOutcome({
+            kind: "turn-failed",
+            taskRunId: args.job.taskRunId,
+            sessionId: args.job.sessionId,
+            ticket: args.ticket,
+            summary: args.summary,
+            cause: args.cause,
+          });
+          yield* settleSession(args.job.sessionId);
+        });
+
+      /** Streams worker logs into the TaskRun row AND the agent parser; returns the last Result. */
+      const observeWorker = (args: {
+        readonly handle: { readonly id: string };
+        readonly session: Session;
+        readonly taskRunId: TaskRunId;
+      }) =>
+        Effect.gen(function* () {
+          // Local once-guard: the session snapshot is stale after the first
+          // persist, so persistSessionUuid alone would re-write on every
+          // subsequent system event in the same stream.
+          let uuidPersisted = args.session.claudeSessionUuid !== null;
+          const pump = yield* Effect.forkChild(
+            runtime.logs(args.handle).pipe(
+              Stream.tap((chunk) => taskRunRepo.appendLogs(args.taskRunId, chunk)),
+              agent.parseStream,
+              Stream.tap((event) => {
+                if (event._tag !== "SessionStarted" || uuidPersisted) return Effect.void;
+                uuidPersisted = true;
+                return agent.persistSessionUuid(args.session, event);
+              }),
+              Stream.runFold(
+                () => null as ResultEvent | null,
+                (last, event) => (event._tag === "Result" ? event : last),
+              ),
+            ),
+          );
+          const exit = yield* runtime.wait(args.handle);
+          const result = yield* Fiber.join(pump);
+          return { exit, result };
+        });
+
+      const runTurn = Effect.fn("TurnExecutor.runTurn")(function* (job: TurnJob, session: Session) {
+        const project = yield* projectRepo.get(session.projectId);
+        const context = yield* taskRunRepo.getContext(job.taskRunId);
+
+        yield* taskRunRepo.transition(job.taskRunId, "PROVISIONING");
+        const cachePath = yield* gitCache.ensureClone(project);
+        if (project.localCachePath === null) {
+          yield* projectRepo.setLocalCachePath(project.id, cachePath);
+        }
+        const paths = yield* worktreeManager.provision({ session, project });
+        const configDir = sessionConfigDir(config.storageRoot, session.id);
+        yield* Effect.promise(() => mkdir(configDir, { recursive: true }));
+
+        const command = agent.buildCommand({ session, context, configDir });
+        const timeoutMillis = config.turnTimeoutSeconds * 1000;
+        yield* taskRunRepo.transition(job.taskRunId, "EXECUTING", {
+          expiresAt: new Date(Date.now() + timeoutMillis),
+        });
+
+        const memoryMib = project.resources.memoryBaselineMib;
+        const handle = yield* runtime.start({
+          name: `maestro-turn-${job.taskRunId}`,
+          image: config.workerImage,
+          command: command.argv,
+          env: command.env,
+          mounts: identityMounts({ ...paths, configDir }),
+          workdir: paths.worktreePath,
+          ...(memoryMib !== undefined && { memoryMib }),
+          timeoutMillis,
+        });
+
+        const { exit, result } = yield* observeWorker({
+          handle,
+          session,
+          taskRunId: job.taskRunId,
+        }).pipe(
+          // an orchestration failure mid-stream must not leak a running worker
+          Effect.onError(() => runtime.kill(handle).pipe(Effect.ignore)),
+        );
+
+        const cause = classifyOutcome(exit, result);
+        if (cause === null && result !== null) {
+          yield* taskRunRepo.transition(job.taskRunId, "COMPLETED", {
+            evictableAfter: evictableAt(),
+            resultText: result.finalText,
+          });
+          yield* enqueueOutcome({
+            kind: "turn-completed",
+            taskRunId: job.taskRunId,
+            sessionId: job.sessionId,
+            ticket: session.ticketReference,
+            summary: result.finalText,
+            cause: null,
+          });
+          yield* settleSession(job.sessionId);
+        } else {
+          const failureCause = cause ?? "ERROR";
+          const summary =
+            result !== null && result.finalText.length > 0
+              ? result.finalText
+              : `worker exited with code ${exit.exitCode} (${failureCause})`;
+          yield* settleFailed({
+            job,
+            ticket: session.ticketReference,
+            cause: failureCause,
+            summary,
+            ...(result !== null && { resultText: result.finalText }),
+          });
+        }
+      });
+
+      return {
+        execute: Effect.fn("TurnExecutor.execute")(function* (job: TurnJob) {
+          const taskRun = yield* taskRunRepo.get(job.taskRunId);
+          if (taskRun.state !== "PENDING") {
+            // replayed or crash-recovered job for an already-started turn —
+            // never re-run an agent pass (no auto-retry by design)
+            yield* Effect.logWarning("TurnExecutor: skipping non-PENDING turn", {
+              taskRunId: job.taskRunId,
+              state: taskRun.state,
+            });
+            return;
+          }
+          const session = yield* sessionRepo.get(job.sessionId);
+
+          yield* runTurn(job, session).pipe(
+            // Orchestration errors (git/db/runtime) still settle the turn as
+            // FAILED with the cause captured, best-effort, then propagate.
+            Effect.tapError((error) =>
+              settleFailed({
+                job,
+                ticket: session.ticketReference,
+                cause: "ERROR",
+                summary: String(error),
+              }).pipe(
+                Effect.catch((settleError) =>
+                  Effect.logError("TurnExecutor: failure settlement incomplete", settleError),
+                ),
+              ),
+            ),
+          );
+        }),
+      };
+    }),
+  );
+}

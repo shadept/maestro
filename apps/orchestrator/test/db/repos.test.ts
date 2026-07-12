@@ -1,4 +1,4 @@
-import type { Project, Session, TaskRun } from "@maestro/domain";
+import type { Project, Session, TaskContext, TaskRun } from "@maestro/domain";
 import { Effect, Exit, Layer, Option } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -53,10 +53,20 @@ const makeSession = (project: Project) =>
     });
   });
 
+const taskContext = (session: Session): TaskContext => ({
+  source: "linear",
+  ticket: session.ticketReference,
+  actor: "shade",
+  title: "A ticket",
+  body: "Do the thing.",
+  deliveryId: `d-${session.id}`,
+  payload: {},
+});
+
 const makeRun = (session: Session) =>
   Effect.gen(function* () {
     const repo = yield* TaskRunRepo;
-    return yield* repo.create(session.id);
+    return yield* repo.create(session.id, taskContext(session));
   });
 
 describe("ProjectRepo", () => {
@@ -215,6 +225,8 @@ describe("TaskRunRepo", () => {
     const result = await run(
       Effect.gen(function* () {
         const repo = yield* TaskRunRepo;
+        const context = yield* repo.getContext(created.id);
+        expect(context).toEqual(taskContext(session));
         yield* repo.transition(created.id, "PROVISIONING");
         const executing = yield* repo.transition(created.id, "EXECUTING", {
           expiresAt: new Date(Date.now() + 60_000),
@@ -222,11 +234,13 @@ describe("TaskRunRepo", () => {
         expect(executing.expiresAt).toBeInstanceOf(Date);
         return yield* repo.transition(created.id, "COMPLETED", {
           evictableAfter: new Date(Date.now() + 3_600_000),
+          resultText: "All done.",
         });
       }),
     );
     expect(result.state).toBe("COMPLETED");
     expect(result.evictableAfter).toBeInstanceOf(Date);
+    expect(result.resultText).toBe("All done.");
   });
 
   it("records a failure cause atomically with the transition", async () => {

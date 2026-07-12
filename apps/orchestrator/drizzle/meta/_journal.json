@@ -8,6 +8,13 @@
       "when": 1783856685207,
       "tag": "0000_fearless_silver_centurion",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1783859639123,
+      "tag": "0001_motionless_zaran",
+      "breakpoints": true
     }
   ]
 }

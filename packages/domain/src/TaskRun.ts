@@ -42,5 +42,7 @@ export const TaskRun = Schema.Struct({
   evictableAfter: Schema.NullOr(Schema.Date),
   /** Set exactly when state is FAILED. */
   cause: Schema.NullOr(TaskRunCause),
+  /** Final agent text from the turn's Result event; null until the turn settles. */
+  resultText: Schema.NullOr(Schema.String),
 });
 export type TaskRun = typeof TaskRun.Type;

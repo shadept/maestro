@@ -95,6 +95,7 @@ describe("TaskRun", () => {
     expiresAt: null,
     evictableAfter: null,
     cause: null,
+    resultText: null,
   };
 
   it("round-trips", () => {

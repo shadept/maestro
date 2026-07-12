@@ -1,0 +1,36 @@
+#!/bin/sh
+# Fake claude-code CLI honoring the FUR-12 agent contract: invoked as
+#   claude -p <prompt> --output-format stream-json --verbose ...
+# so $1 is "-p" and $2 is the prompt. Emits valid stream-json on stdout and
+# commits a file into the mounted worktree (cwd). Never talks to any API.
+#
+# Behavior markers in the prompt:
+#   MODE=FAIL  -> emit an error result and exit 1
+#   MODE=HANG  -> sleep forever (exercises the turn timeout kill path)
+set -e
+
+PROMPT="$2"
+SESSION_UUID="7f0e8a3c-0000-4000-8000-feedfacecafe"
+
+printf '%s\n' "{\"type\":\"system\",\"subtype\":\"init\",\"cwd\":\"$PWD\",\"session_id\":\"$SESSION_UUID\"}"
+
+case "$PROMPT" in
+  *MODE=FAIL*)
+    printf '%s\n' "{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true,\"result\":\"fake agent exploded\",\"session_id\":\"$SESSION_UUID\"}"
+    exit 1
+    ;;
+  *MODE=HANG*)
+    sleep 600
+    exit 0
+    ;;
+esac
+
+printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Committing the work.\"}]},\"session_id\":\"$SESSION_UUID\"}"
+
+# The mounts are host-uid owned while the container runs as root.
+git config --global --add safe.directory '*'
+echo "agent was here" > agent-output.txt
+git add agent-output.txt
+git -c user.email=agent@maestro.test -c user.name="Fake Agent" commit -q -m "fake agent work"
+
+printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Committed agent-output.txt.\",\"session_id\":\"$SESSION_UUID\"}"

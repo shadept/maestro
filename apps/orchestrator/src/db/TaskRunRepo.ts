@@ -4,6 +4,7 @@ import {
   EntityNotFoundError,
   type SessionId,
   StateTransitionError,
+  TaskContext,
   TaskRun,
   type TaskRunCause,
   type TaskRunId,
@@ -17,6 +18,7 @@ import { taskRuns } from "./schema/index.ts";
 import { dbTry } from "./support.ts";
 
 const decode = Schema.decodeUnknownSync(TaskRun);
+const decodeContext = Schema.decodeUnknownSync(TaskContext);
 const toTaskRun = (row: typeof taskRuns.$inferSelect): TaskRun =>
   decode({
     id: row.id,
@@ -26,6 +28,7 @@ const toTaskRun = (row: typeof taskRuns.$inferSelect): TaskRun =>
     expiresAt: row.expiresAt,
     evictableAfter: row.evictableAfter,
     cause: row.cause,
+    resultText: row.resultText,
   });
 
 const allStates = Object.keys(taskRunTransitions) as ReadonlyArray<TaskRunState>;
@@ -34,13 +37,19 @@ export interface TaskRunTransitionOptions {
   readonly cause?: TaskRunCause;
   readonly expiresAt?: Date;
   readonly evictableAfter?: Date;
+  readonly resultText?: string;
 }
 
 export class TaskRunRepo extends Context.Service<
   TaskRunRepo,
   {
-    readonly create: (sessionId: SessionId) => Effect.Effect<TaskRun, DbError>;
+    readonly create: (
+      sessionId: SessionId,
+      context: TaskContext,
+    ) => Effect.Effect<TaskRun, DbError>;
     readonly get: (id: TaskRunId) => Effect.Effect<TaskRun, DbError>;
+    /** The turn's TaskContext payload (kept off the entity — jsonb, read on demand). */
+    readonly getContext: (id: TaskRunId) => Effect.Effect<TaskContext, DbError>;
     readonly listBySession: (
       sessionId: SessionId,
     ) => Effect.Effect<ReadonlyArray<TaskRun>, DbError>;
@@ -74,15 +83,22 @@ export class TaskRunRepo extends Context.Service<
         );
 
       return {
-        create: Effect.fn("TaskRunRepo.create")(function* (sessionId: SessionId) {
+        create: Effect.fn("TaskRunRepo.create")(function* (
+          sessionId: SessionId,
+          context: TaskContext,
+        ) {
           const rows = yield* dbTry("TaskRunRepo.create")(() =>
-            client.insert(taskRuns).values({ sessionId, state: "PENDING" }).returning(),
+            client.insert(taskRuns).values({ sessionId, state: "PENDING", context }).returning(),
           );
           // biome-ignore lint/style/noNonNullAssertion: insert returning always yields one row
           return toTaskRun(rows[0]!);
         }),
         get: Effect.fn("TaskRunRepo.get")(function* (id: TaskRunId) {
           return toTaskRun(yield* getById("TaskRunRepo.get")(id));
+        }),
+        getContext: Effect.fn("TaskRunRepo.getContext")(function* (id: TaskRunId) {
+          const row = yield* getById("TaskRunRepo.getContext")(id);
+          return decodeContext(row.context);
         }),
         listBySession: Effect.fn("TaskRunRepo.listBySession")(function* (sessionId: SessionId) {
           const rows = yield* dbTry("TaskRunRepo.listBySession")(() =>
@@ -110,6 +126,7 @@ export class TaskRunRepo extends Context.Service<
                 ...(options?.evictableAfter !== undefined && {
                   evictableAfter: options.evictableAfter,
                 }),
+                ...(options?.resultText !== undefined && { resultText: options.resultText }),
               })
               .where(and(eq(taskRuns.id, id), inArray(taskRuns.state, [...legalFrom])))
               .returning(),

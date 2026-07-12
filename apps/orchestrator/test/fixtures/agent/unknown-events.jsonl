@@ -1,0 +1,6 @@
+{"type":"system","subtype":"init","cwd":"/workspace","session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","tools":[],"model":"claude-fable-5","claude_code_version":"9.9.9","uuid":"00000000-0000-4000-8000-000000000010"}
+{"type":"telemetry_snapshot_v7","payload":{"metrics":[1,2,3]},"session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"}
+this line is not json at all {{{
+{"no_type_field":true,"just":"garbage-shaped json"}
+{"type":"assistant","message":{"model":"claude-fable-5","id":"msg_031","type":"message","role":"assistant","content":[{"type":"text","text":"Still fine."}],"usage":{"input_tokens":1,"output_tokens":1}},"session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","uuid":"00000000-0000-4000-8000-000000000011"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":10,"num_turns":1,"result":"Still fine.","session_id":"aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee","terminal_reason":"completed","uuid":"00000000-0000-4000-8000-000000000012"}

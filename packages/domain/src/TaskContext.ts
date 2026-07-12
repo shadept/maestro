@@ -19,6 +19,8 @@ export const TaskContext = Schema.Struct({
   ticket: TicketReference,
   /** Who triggered the turn (platform-native user handle or name). */
   actor: Schema.String,
+  /** Ticket title; part of the first-turn prompt. Null on comment-triggered turns. */
+  title: Schema.NullOr(Schema.String),
   /** The text that drives the turn: triggering comment, or issue body on first turn. */
   body: Schema.String,
   /** Platform delivery id — the idempotency key for webhook dedup. */

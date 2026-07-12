@@ -138,6 +138,7 @@ describe("TaskContext", () => {
     source: "linear",
     ticket: { source: "linear", externalId: "FUR-42" },
     actor: "shade",
+    title: "Add a lint rule",
     body: "Please add a lint rule",
     deliveryId: "delivery-123",
     payload: { type: "Issue", action: "update", nested: { anything: [1, 2, 3] } },

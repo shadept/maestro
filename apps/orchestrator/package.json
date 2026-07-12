@@ -16,7 +16,8 @@
     "@maestro/domain": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "effect": "4.0.0-beta.97",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "pg-boss": "^12.26.0"
   },
   "devDependencies": {
     "@testcontainers/postgresql": "^12.0.4",

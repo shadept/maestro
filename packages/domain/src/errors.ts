@@ -58,6 +58,19 @@ export class NotImplementedError extends Schema.TaggedErrorClass<NotImplementedE
 
 export type RuntimeError = WorkerSpawnError | WorkerNotFoundError | NotImplementedError;
 
+// ── queue area ─────────────────────────────────────────────────────────────
+
+export class QueueOperationError extends Schema.TaggedErrorClass<QueueOperationError>()(
+  "QueueOperationError",
+  {
+    /** The queue method that failed, e.g. "TurnQueue.enqueue". */
+    operation: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+export type QueueError = QueueOperationError;
+
 // ── ingestion area ─────────────────────────────────────────────────────────
 
 export class WebhookVerificationError extends Schema.TaggedErrorClass<WebhookVerificationError>()(

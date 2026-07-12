@@ -1,5 +1,5 @@
 import type { SessionState, TaskSource } from "@maestro/domain";
-import { index, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { uuidV7PrimaryKey } from "./columns.ts";
 import { projects } from "./projects.ts";
 
@@ -14,6 +14,8 @@ export const sessions = pgTable(
     ticketExternalId: text("ticket_external_id").notNull(),
     gitBranch: text("git_branch").notNull(),
     claudeSessionUuid: uuid("claude_session_uuid"),
+    prNumber: integer("pr_number"),
+    prUrl: text("pr_url"),
     state: text("state").$type<SessionState>().notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).notNull().defaultNow(),

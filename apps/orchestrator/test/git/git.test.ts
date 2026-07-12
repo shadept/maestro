@@ -32,6 +32,8 @@ const makeSession = (n: number, branch: string): Session =>
     ticketReference: { source: "linear", externalId: `FUR-${n}` },
     gitBranch: branch,
     claudeSessionUuid: null,
+    prNumber: null,
+    prUrl: null,
     state: "WARM_IDLE",
     createdAt: new Date(),
     lastActivityAt: new Date(),

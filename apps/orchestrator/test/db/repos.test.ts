@@ -194,6 +194,25 @@ describe("SessionRepo", () => {
     );
   });
 
+  it("stores the forge PR reference", async () => {
+    const project = await run(makeProject);
+    const session = await run(makeSession(project));
+    expect(session.prNumber).toBeNull();
+    expect(session.prUrl).toBeNull();
+
+    const withPr = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepo;
+        return yield* repo.setPullRequest(session.id, {
+          number: 41,
+          url: "https://github.com/shadept/maestro/pull/41",
+        });
+      }),
+    );
+    expect(withPr.prNumber).toBe(41);
+    expect(withPr.prUrl).toBe("https://github.com/shadept/maestro/pull/41");
+  });
+
   it("concurrent conflicting transitions: exactly one wins", async () => {
     const project = await run(makeProject);
     const session = await run(makeSession(project));

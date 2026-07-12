@@ -1,6 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import type {
   DbError,
+  ForgeError,
   GitError,
   RuntimeError,
   Session,
@@ -17,12 +18,19 @@ import { ProjectRepo } from "../db/ProjectRepo.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
 import { TaskRunRepo } from "../db/TaskRunRepo.ts";
 import { GitCache } from "../git/GitCache.ts";
+import { OutboundGit } from "../git/OutboundGit.ts";
 import { WorktreeManager } from "../git/WorktreeManager.ts";
 import type { TurnJob } from "../queue/TurnQueue.ts";
 import { type ExitInfo, WorkerRuntime } from "../runtime/WorkerRuntime.ts";
 import { sessionConfigDir } from "../storage/paths.ts";
 
-export type TurnExecutionError = DbError | GitError | RuntimeError;
+export type TurnExecutionError = DbError | GitError | RuntimeError | ForgeError;
+
+/** PR coordinates for the ticket comment. */
+export interface PrReference {
+  readonly number: number;
+  readonly url: string;
+}
 
 /**
  * Outbox payload written when a turn settles. M1.13 drains these entries and
@@ -36,7 +44,15 @@ export interface TurnOutcomePayload {
   /** Final agent text on completion; failure summary on failure. */
   readonly summary: string;
   readonly cause: TaskRunCause | null;
+  /** The session's PR, so the ticket comment links it. Null until a first push. */
+  readonly pr: PrReference | null;
 }
+
+/** The session's persisted PR reference, if the orchestrator has pushed before. */
+const prOf = (session: Session): PrReference | null =>
+  session.prNumber !== null && session.prUrl !== null
+    ? { number: session.prNumber, url: session.prUrl }
+    : null;
 
 type ResultEvent = Extract<AgentEvent, { _tag: "Result" }>;
 
@@ -101,6 +117,7 @@ export class TurnExecutor extends Context.Service<
       const outboxRepo = yield* OutboxRepo;
       const gitCache = yield* GitCache;
       const worktreeManager = yield* WorktreeManager;
+      const outboundGit = yield* OutboundGit;
       const runtime = yield* WorkerRuntime;
       const agent = yield* AgentContract;
 
@@ -132,6 +149,7 @@ export class TurnExecutor extends Context.Service<
         readonly ticket: TicketReference;
         readonly cause: TaskRunCause;
         readonly summary: string;
+        readonly pr: PrReference | null;
         readonly resultText?: string;
       }) =>
         Effect.gen(function* () {
@@ -147,6 +165,7 @@ export class TurnExecutor extends Context.Service<
             ticket: args.ticket,
             summary: args.summary,
             cause: args.cause,
+            pr: args.pr,
           });
           yield* settleSession(args.job.sessionId);
         });
@@ -224,6 +243,39 @@ export class TurnExecutor extends Context.Service<
 
         const cause = classifyOutcome(exit, result);
         if (cause === null && result !== null) {
+          // Outbound publish (FUR-15): push new commits + ensure the PR before
+          // the run is recorded COMPLETED. DECISION: a publish failure after an
+          // ok agent Result settles the turn FAILED (cause ERROR) with the
+          // publish error as the callback summary — never COMPLETED with a
+          // silently missing PR — and then propagates as an orchestration
+          // error (pg-boss failure record). The generic settlement in
+          // `execute` re-fires on the propagated error but its FAILED→FAILED
+          // transition is rejected, so this tailored settlement wins.
+          const published = yield* outboundGit.publish({ session, project, context }).pipe(
+            Effect.tapError((error) =>
+              settleFailed({
+                job,
+                ticket: session.ticketReference,
+                cause: "ERROR",
+                summary: `agent succeeded but publishing failed: ${String(error)}`,
+                pr: prOf(session),
+                resultText: result.finalText,
+              }).pipe(
+                Effect.catch((settleError) =>
+                  Effect.logError(
+                    "TurnExecutor: publish-failure settlement incomplete",
+                    settleError,
+                  ),
+                ),
+              ),
+            ),
+          );
+          // no-commit turns publish nothing; the callback still links a PR
+          // opened by an earlier turn, if any
+          const pr =
+            published._tag === "Published"
+              ? { number: published.prNumber, url: published.prUrl }
+              : prOf(session);
           yield* taskRunRepo.transition(job.taskRunId, "COMPLETED", {
             evictableAfter: evictableAt(),
             resultText: result.finalText,
@@ -235,6 +287,7 @@ export class TurnExecutor extends Context.Service<
             ticket: session.ticketReference,
             summary: result.finalText,
             cause: null,
+            pr,
           });
           yield* settleSession(job.sessionId);
         } else {
@@ -248,6 +301,7 @@ export class TurnExecutor extends Context.Service<
             ticket: session.ticketReference,
             cause: failureCause,
             summary,
+            pr: prOf(session),
             ...(result !== null && { resultText: result.finalText }),
           });
         }
@@ -276,6 +330,7 @@ export class TurnExecutor extends Context.Service<
                 ticket: session.ticketReference,
                 cause: "ERROR",
                 summary: String(error),
+                pr: prOf(session),
               }).pipe(
                 Effect.catch((settleError) =>
                   Effect.logError("TurnExecutor: failure settlement incomplete", settleError),

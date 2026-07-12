@@ -26,6 +26,10 @@ export const Session = Schema.Struct({
   gitBranch: Schema.NonEmptyString,
   /** Claude session uuid for --resume; null until the first turn has run. */
   claudeSessionUuid: Schema.NullOr(Schema.String.check(Schema.isUUID())),
+  /** Forge PR number; null until the orchestrator's first push opens the draft PR. */
+  prNumber: Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
+  /** Forge PR html URL, linked from ticket callbacks. Set together with prNumber. */
+  prUrl: Schema.NullOr(Schema.NonEmptyString),
   state: SessionState,
   createdAt: Schema.Date,
   /** Drives LRU eviction ordering. Updated on every turn activity. */

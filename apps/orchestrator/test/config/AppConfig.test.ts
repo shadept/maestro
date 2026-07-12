@@ -31,6 +31,9 @@ describe("AppConfig", () => {
     expect(config.retentionDays).toBe(14);
     expect(Redacted.value(config.adminToken)).toBe("secret-token");
     expect(Option.isNone(config.agentOauthToken)).toBe(true);
+    expect(Option.isNone(config.githubToken)).toBe(true);
+    expect(config.gitAuthorName).toBe("Maestro");
+    expect(config.gitAuthorEmail).toBe("maestro@localhost");
     expect(config.logFormat).toBe("json");
     expect(config.port).toBe(3000);
   });
@@ -42,11 +45,17 @@ describe("AppConfig", () => {
       MAESTRO_LOG_FORMAT: "pretty",
       MAESTRO_PORT: "8080",
       CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
+      MAESTRO_GITHUB_TOKEN: "gh-token",
+      MAESTRO_GIT_AUTHOR_NAME: "Maestro Bot",
+      MAESTRO_GIT_AUTHOR_EMAIL: "bot@example.com",
     });
     expect(config.maxConcurrentWorkers).toBe(5);
     expect(config.logFormat).toBe("pretty");
     expect(config.port).toBe(8080);
     expect(Option.map(config.agentOauthToken, Redacted.value)).toEqual(Option.some("oauth-token"));
+    expect(Option.map(config.githubToken, Redacted.value)).toEqual(Option.some("gh-token"));
+    expect(config.gitAuthorName).toBe("Maestro Bot");
+    expect(config.gitAuthorEmail).toBe("bot@example.com");
   });
 
   it("fails with a readable error naming the missing variables", async () => {

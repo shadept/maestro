@@ -39,6 +39,27 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
 
 export type GitError = GitCommandError;
 
+// ── forge area ─────────────────────────────────────────────────────────────
+
+export class ForgeApiError extends Schema.TaggedErrorClass<ForgeApiError>()("ForgeApiError", {
+  /** The forge method that failed, e.g. "GitHubForge.ensurePullRequest". */
+  operation: Schema.String,
+  message: Schema.String,
+  /** HTTP status of the forge response, when one was received. */
+  status: Schema.NullOr(Schema.Number),
+}) {}
+
+export class RepoUrlParseError extends Schema.TaggedErrorClass<RepoUrlParseError>()(
+  "RepoUrlParseError",
+  {
+    /** The repo URL that could not be mapped to forge coordinates. */
+    url: Schema.String,
+    forge: Schema.String,
+  },
+) {}
+
+export type ForgeError = ForgeApiError | RepoUrlParseError;
+
 // ── worker runtime area ────────────────────────────────────────────────────
 
 export class WorkerSpawnError extends Schema.TaggedErrorClass<WorkerSpawnError>()(

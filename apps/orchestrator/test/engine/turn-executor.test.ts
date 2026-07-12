@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { access, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { TaskContext, TaskRun, TaskRunState } from "@maestro/domain";
+import { ForgeApiError, type TaskContext, type TaskRun, type TaskRunState } from "@maestro/domain";
 import { Effect, Layer, type Scope } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -14,7 +14,9 @@ import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 import { TaskRunRepo } from "../../src/db/TaskRunRepo.ts";
 import { TurnExecutor, type TurnOutcomePayload } from "../../src/engine/TurnExecutor.ts";
+import { type ForgeCall, GitHubForge } from "../../src/forge/GitHubForge.ts";
 import { GitCache } from "../../src/git/GitCache.ts";
+import { OutboundGit } from "../../src/git/OutboundGit.ts";
 import { RepoLocks } from "../../src/git/RepoLocks.ts";
 import { branchNameFor, WorktreeManager } from "../../src/git/WorktreeManager.ts";
 import { TurnQueue } from "../../src/queue/TurnQueue.ts";
@@ -25,7 +27,7 @@ import { startTestDb, type TestDb } from "../support/pg.ts";
 // The fake agent (test/fixtures/fake-agent): a `claude` shell script honoring
 // the stream-json contract — emits valid events and commits a file into the
 // mounted worktree. Built once per suite; never calls any API.
-const FAKE_IMAGE = "maestro-fake-agent:fur14";
+const FAKE_IMAGE = "maestro-fake-agent:fur15";
 const FAKE_SESSION_UUID = "7f0e8a3c-0000-4000-8000-feedfacecafe";
 
 type Services = TurnExecutor | TurnQueue | ProjectRepo | SessionRepo | TaskRunRepo | OutboxRepo;
@@ -38,16 +40,19 @@ let originDir: string;
 const git = (cwd: string, ...args: string[]): string =>
   execFileSync("git", args, { cwd, encoding: "utf8" }).trimEnd();
 
-const makeLayer = (turnTimeoutSeconds: number): Layer.Layer<Services> => {
+const makeLayer = (
+  turnTimeoutSeconds: number,
+  forge: { readonly calls?: ForgeCall[]; readonly failWith?: ForgeApiError } = {},
+): Layer.Layer<Services> => {
   const repos = Layer.mergeAll(
     ProjectRepo.layer,
     SessionRepo.layer,
     TaskRunRepo.layer,
     OutboxRepo.layer,
   );
-  const gitLayer = Layer.mergeAll(GitCache.layer, WorktreeManager.layer).pipe(
+  const gitLayer = Layer.mergeAll(GitCache.layer, WorktreeManager.layer, OutboundGit.layer).pipe(
     Layer.provideMerge(GitCache.layer),
-    Layer.provide(RepoLocks.layer),
+    Layer.provide(Layer.mergeAll(RepoLocks.layer, GitHubForge.layerTest(forge))),
   );
   const executor = TurnExecutor.layer.pipe(
     Layer.provide(Layer.mergeAll(AgentContract.layer, WorkerRuntime.layerLocalCli, gitLayer)),
@@ -69,6 +74,7 @@ const makeLayer = (turnTimeoutSeconds: number): Layer.Layer<Services> => {
 };
 
 let layer: Layer.Layer<Services>;
+const forgeCalls: ForgeCall[] = [];
 
 const run = <A, E>(effect: Effect.Effect<A, E, Services | Scope.Scope>): Promise<A> =>
   Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(layer)));
@@ -133,7 +139,7 @@ beforeAll(async () => {
     { stdio: "pipe" },
   );
 
-  layer = makeLayer(120);
+  layer = makeLayer(120, { calls: forgeCalls });
 });
 
 afterAll(async () => {
@@ -214,18 +220,121 @@ describe("TurnExecutor", () => {
     expect(settled.session.claudeSessionUuid).toBe(FAKE_SESSION_UUID);
     expect(settled.session.state).toBe("WARM_IDLE");
 
-    // outbox callback entry created
+    // outbox callback entry created, linking the PR
     expect(settled.outbox).toHaveLength(1);
     const payload = settled.outbox[0]?.payload as TurnOutcomePayload;
     expect(payload.kind).toBe("turn-completed");
     expect(payload.summary).toBe("Committed agent-output.txt.");
     expect(settled.outbox[0]?.idempotencyKey).toBe(`turn-result:${taskRun.id}`);
+    expect(payload.pr).not.toBeNull();
+    expect(payload.pr?.url).toContain("github.test");
 
     // the agent's commit landed in the session worktree on its branch
     const worktree = worktreeDir(storageRoot, session.id);
     expect(await exists(path.join(worktree, "agent-output.txt"))).toBe(true);
     expect(git(worktree, "log", "--oneline")).toContain("fake agent work");
     expect(git(worktree, "rev-parse", "--abbrev-ref", "HEAD")).toBe(session.gitBranch);
+
+    // FUR-15: the orchestrator pushed the agent's commit and opened a draft PR
+    expect(git(originDir, "rev-parse", `refs/heads/${session.gitBranch}`)).toBe(
+      git(worktree, "rev-parse", "HEAD"),
+    );
+    const createCall = forgeCalls.find((c) => c.args.headBranch === session.gitBranch);
+    expect(createCall?.op).toBe("create");
+    expect(createCall?.args.draft).toBe(true);
+    expect(createCall?.args.title).toBe("FUR-101: Ticket FUR-101");
+    expect(settled.session.prNumber).toBe(payload.pr?.number);
+    expect(settled.session.prUrl).toBe(payload.pr?.url);
+  });
+
+  it("no-commit turn: COMPLETED, publish skipped silently, callback without PR", async () => {
+    const { session, taskRun } = await run(setupTurn("FUR-105", "MODE=NOCOMMIT"));
+
+    await run(
+      Effect.gen(function* () {
+        const executor = yield* TurnExecutor;
+        yield* executor.execute({ taskRunId: taskRun.id, sessionId: session.id });
+      }),
+    );
+
+    const settled = await run(
+      Effect.gen(function* () {
+        const taskRunRepo = yield* TaskRunRepo;
+        const sessionRepo = yield* SessionRepo;
+        return {
+          taskRun: yield* taskRunRepo.get(taskRun.id),
+          session: yield* sessionRepo.get(session.id),
+          outbox: yield* outboxEntryFor(taskRun),
+        };
+      }),
+    );
+
+    expect(settled.taskRun.state).toBe("COMPLETED");
+    expect(settled.taskRun.resultText).toBe("Answered without changes.");
+    expect(settled.session.state).toBe("WARM_IDLE");
+
+    // callback still goes out, with no PR to link
+    expect(settled.outbox).toHaveLength(1);
+    const payload = settled.outbox[0]?.payload as TurnOutcomePayload;
+    expect(payload.kind).toBe("turn-completed");
+    expect(payload.pr).toBeNull();
+
+    // nothing pushed, no PR opened, nothing persisted
+    expect(git(originDir, "branch", "--list", session.gitBranch)).toBe("");
+    expect(forgeCalls.some((c) => c.args.headBranch === session.gitBranch)).toBe(false);
+    expect(settled.session.prNumber).toBeNull();
+    expect(settled.session.prUrl).toBeNull();
+  });
+
+  it("publish failure after agent success: FAILED with cause ERROR, summary in outbox", async () => {
+    const failLayer = makeLayer(120, {
+      failWith: new ForgeApiError({ operation: "test", message: "github is down", status: 503 }),
+    });
+    const runFail = <A, E>(effect: Effect.Effect<A, E, Services | Scope.Scope>): Promise<A> =>
+      Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(failLayer)));
+
+    const { session, taskRun } = await runFail(setupTurn("FUR-106", "Please do the work."));
+
+    // publish failure is an orchestration error: execute settles FAILED, then fails
+    const failed = await runFail(
+      Effect.gen(function* () {
+        const executor = yield* TurnExecutor;
+        return yield* executor
+          .execute({ taskRunId: taskRun.id, sessionId: session.id })
+          .pipe(Effect.flip);
+      }),
+    );
+    expect(failed._tag).toBe("ForgeApiError");
+
+    const settled = await runFail(
+      Effect.gen(function* () {
+        const taskRunRepo = yield* TaskRunRepo;
+        const sessionRepo = yield* SessionRepo;
+        return {
+          taskRun: yield* taskRunRepo.get(taskRun.id),
+          session: yield* sessionRepo.get(session.id),
+          outbox: yield* outboxEntryFor(taskRun),
+        };
+      }),
+    );
+
+    // never COMPLETED with a silently missing PR
+    expect(settled.taskRun.state).toBe("FAILED");
+    expect(settled.taskRun.cause).toBe("ERROR");
+    // the agent's final text is still preserved on the run
+    expect(settled.taskRun.resultText).toBe("Committed agent-output.txt.");
+    expect(settled.session.state).toBe("WARM_IDLE");
+    expect(settled.session.prNumber).toBeNull();
+
+    expect(settled.outbox).toHaveLength(1);
+    const payload = settled.outbox[0]?.payload as TurnOutcomePayload;
+    expect(payload.kind).toBe("turn-failed");
+    expect(payload.cause).toBe("ERROR");
+    expect(payload.summary).toContain("publishing failed");
+    expect(payload.pr).toBeNull();
+
+    // the branch push itself succeeded — a later retry only needs the forge
+    expect(git(originDir, "rev-parse", `refs/heads/${session.gitBranch}`)).toBeTruthy();
   });
 
   it("agent exit 1: FAILED with cause, worktree intact, outbox failure entry", async () => {

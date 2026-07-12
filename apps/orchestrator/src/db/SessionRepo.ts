@@ -24,6 +24,8 @@ const toSession = (row: typeof sessions.$inferSelect): Session =>
     ticketReference: { source: row.ticketSource, externalId: row.ticketExternalId },
     gitBranch: row.gitBranch,
     claudeSessionUuid: row.claudeSessionUuid,
+    prNumber: row.prNumber,
+    prUrl: row.prUrl,
     state: row.state,
     createdAt: row.createdAt,
     lastActivityAt: row.lastActivityAt,
@@ -52,6 +54,11 @@ export class SessionRepo extends Context.Service<
      */
     readonly transition: (id: SessionId, to: SessionState) => Effect.Effect<Session, DbError>;
     readonly setClaudeSessionUuid: (id: SessionId, uuid: string) => Effect.Effect<Session, DbError>;
+    /** Records the forge PR opened for this session's branch (first outbound publish). */
+    readonly setPullRequest: (
+      id: SessionId,
+      pr: { readonly number: number; readonly url: string },
+    ) => Effect.Effect<Session, DbError>;
     readonly touchActivity: (id: SessionId) => Effect.Effect<Session, DbError>;
   }
 >()("maestro/db/SessionRepo") {
@@ -135,6 +142,23 @@ export class SessionRepo extends Context.Service<
             client
               .update(sessions)
               .set({ claudeSessionUuid: uuid })
+              .where(eq(sessions.id, id))
+              .returning(),
+          );
+          const row = rows[0];
+          if (!row) {
+            return yield* new EntityNotFoundError({ entity: "Session", entityId: id });
+          }
+          return toSession(row);
+        }),
+        setPullRequest: Effect.fn("SessionRepo.setPullRequest")(function* (
+          id: SessionId,
+          pr: { readonly number: number; readonly url: string },
+        ) {
+          const rows = yield* dbTry("SessionRepo.setPullRequest")(() =>
+            client
+              .update(sessions)
+              .set({ prNumber: pr.number, prUrl: pr.url })
               .where(eq(sessions.id, id))
               .returning(),
           );

@@ -62,6 +62,8 @@ describe("Session", () => {
     ticketReference: { source: "linear", externalId: "FUR-42" },
     gitBranch: "maestro/FUR-42",
     claudeSessionUuid: null,
+    prNumber: null,
+    prUrl: null,
     state: "WARM_IDLE",
     createdAt: new Date("2026-07-12T00:00:00Z"),
     lastActivityAt: new Date("2026-07-12T01:00:00Z"),
@@ -75,6 +77,17 @@ describe("Session", () => {
 
   it("accepts a stored claude session uuid", () => {
     roundTrip(Session, { ...valid, claudeSessionUuid: uuid(9) });
+  });
+
+  it("accepts stored PR coordinates and rejects a non-positive PR number", () => {
+    const withPr = roundTrip(Session, {
+      ...valid,
+      prNumber: 7,
+      prUrl: "https://github.com/shadept/maestro/pull/7",
+    });
+    expect(withPr.prNumber).toBe(7);
+    expect(() => Schema.decodeUnknownSync(Session)({ ...valid, prNumber: 0 })).toThrow();
+    expect(() => Schema.decodeUnknownSync(Session)({ ...valid, prUrl: "" })).toThrow();
   });
 
   it("rejects an unknown state literal", () => {

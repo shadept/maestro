@@ -5,8 +5,9 @@
 # commits a file into the mounted worktree (cwd). Never talks to any API.
 #
 # Behavior markers in the prompt:
-#   MODE=FAIL  -> emit an error result and exit 1
-#   MODE=HANG  -> sleep forever (exercises the turn timeout kill path)
+#   MODE=FAIL     -> emit an error result and exit 1
+#   MODE=HANG     -> sleep forever (exercises the turn timeout kill path)
+#   MODE=NOCOMMIT -> succeed without committing (question-answer turn)
 set -e
 
 PROMPT="$2"
@@ -21,6 +22,11 @@ case "$PROMPT" in
     ;;
   *MODE=HANG*)
     sleep 600
+    exit 0
+    ;;
+  *MODE=NOCOMMIT*)
+    printf '%s\n' "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Just answering.\"}]},\"session_id\":\"$SESSION_UUID\"}"
+    printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Answered without changes.\",\"session_id\":\"$SESSION_UUID\"}"
     exit 0
     ;;
 esac

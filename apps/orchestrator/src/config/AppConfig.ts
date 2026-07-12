@@ -25,6 +25,19 @@ const config = {
   cooldownMinutes: Config.int("MAESTRO_COOLDOWN_MINUTES").pipe(Config.withDefault(60)),
   retentionDays: Config.int("MAESTRO_RETENTION_DAYS").pipe(Config.withDefault(14)),
   adminToken: Config.redacted("MAESTRO_ADMIN_TOKEN"),
+  /**
+   * Orchestrator forge credential (GitHub PAT / app token): used both to push
+   * session branches and for forge API calls. Optional at boot — outbound
+   * publishing fails per-invocation without it, nothing else does.
+   */
+  githubToken: Config.option(Config.redacted("MAESTRO_GITHUB_TOKEN")),
+  /** Commit identity defaults (PRD: distinct Maestro author). Config value only in M1. */
+  gitAuthorName: Config.nonEmptyString("MAESTRO_GIT_AUTHOR_NAME").pipe(
+    Config.withDefault("Maestro"),
+  ),
+  gitAuthorEmail: Config.nonEmptyString("MAESTRO_GIT_AUTHOR_EMAIL").pipe(
+    Config.withDefault("maestro@localhost"),
+  ),
   /** Subscription session token (preferred) — see Tech Requirements §9. */
   agentOauthToken: Config.option(Config.redacted("CLAUDE_CODE_OAUTH_TOKEN")),
   /** API key fallback for agent auth. */
@@ -48,6 +61,9 @@ export class AppConfig extends Context.Service<
     readonly cooldownMinutes: number;
     readonly retentionDays: number;
     readonly adminToken: Redacted.Redacted;
+    readonly githubToken: Option.Option<Redacted.Redacted>;
+    readonly gitAuthorName: string;
+    readonly gitAuthorEmail: string;
     readonly agentOauthToken: Option.Option<Redacted.Redacted>;
     readonly agentApiKey: Option.Option<Redacted.Redacted>;
     readonly logFormat: "json" | "pretty";
@@ -69,6 +85,9 @@ export class AppConfig extends Context.Service<
       cooldownMinutes: 60,
       retentionDays: 14,
       adminToken: Redacted.make("test-admin-token"),
+      githubToken: Option.none(),
+      gitAuthorName: "Maestro",
+      gitAuthorEmail: "maestro@localhost",
       agentOauthToken: Option.none(),
       agentApiKey: Option.none(),
       logFormat: "pretty",

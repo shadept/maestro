@@ -15,6 +15,13 @@
       "when": 1783859639123,
       "tag": "0001_motionless_zaran",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783861084615,
+      "tag": "0002_hard_beast",
+      "breakpoints": true
     }
   ]
 }

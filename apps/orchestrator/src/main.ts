@@ -13,7 +13,9 @@ import { ProjectRepo } from "./db/ProjectRepo.ts";
 import { SessionRepo } from "./db/SessionRepo.ts";
 import { TaskRunRepo } from "./db/TaskRunRepo.ts";
 import { TurnExecutor } from "./engine/TurnExecutor.ts";
+import { GitHubForge } from "./forge/GitHubForge.ts";
 import { GitCache } from "./git/GitCache.ts";
+import { OutboundGit } from "./git/OutboundGit.ts";
 import { RepoLocks } from "./git/RepoLocks.ts";
 import { WorktreeManager } from "./git/WorktreeManager.ts";
 import { HealthRoutes } from "./http/health.ts";
@@ -41,9 +43,10 @@ const ReposLive = Layer.mergeAll(
   OutboxRepo.layer,
 );
 
-const GitLive = Layer.mergeAll(GitCache.layer, WorktreeManager.layer).pipe(
+// GitHub is the only M1 forge; a second forge becomes a config-selected layer here.
+const GitLive = Layer.mergeAll(GitCache.layer, WorktreeManager.layer, OutboundGit.layer).pipe(
   Layer.provideMerge(GitCache.layer),
-  Layer.provide(RepoLocks.layer),
+  Layer.provide(Layer.mergeAll(RepoLocks.layer, GitHubForge.layer)),
 );
 
 const TurnExecutorLive = TurnExecutor.layer.pipe(

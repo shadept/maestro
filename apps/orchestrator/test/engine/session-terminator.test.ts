@@ -31,6 +31,7 @@ import {
   buildFakeAgentImage,
   cleanStorageViaContainer,
   FAKE_AGENT_IMAGE,
+  fakeAgentRuntimeTemplate,
 } from "../support/fake-agent.ts";
 import { startTestDb, type TestDb } from "../support/pg.ts";
 
@@ -159,6 +160,9 @@ beforeAll(async () => {
         databaseUrl: testDb.connectionString,
         storageRoot,
         workerImage: FAKE_AGENT_IMAGE,
+        // run the worker as the test process uid so it can write the mounts
+        // on Linux hosts (bind mounts preserve real ownership there)
+        runtimeTemplate: fakeAgentRuntimeTemplate(),
         turnTimeoutSeconds: 120,
         maxConcurrentWorkers: 2,
       }),

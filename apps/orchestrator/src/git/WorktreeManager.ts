@@ -20,7 +20,7 @@ export const branchNameFor = (ticket: TicketReference, project: Project): string
 export interface WorktreePaths {
   /** Mounted read-write into the worker. */
   readonly worktreePath: string;
-  /** The parent (bare) git dir, mounted read-only per PRD §3.2. */
+  /** The parent (bare) git dir, mounted read-write (worktree commits write objects/refs into it — see TurnExecutor.ts); hardening deferred to M1.16+. */
   readonly gitDir: string;
 }
 

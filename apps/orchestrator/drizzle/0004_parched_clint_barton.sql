@@ -1,0 +1,1 @@
+ALTER TABLE "sessions" ADD COLUMN "termination_requested_at" timestamp with time zone;

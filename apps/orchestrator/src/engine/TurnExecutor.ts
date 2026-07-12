@@ -25,6 +25,7 @@ import { WorktreeManager } from "../git/WorktreeManager.ts";
 import type { TurnJob } from "../queue/TurnQueue.ts";
 import { type ExitInfo, WorkerRuntime } from "../runtime/WorkerRuntime.ts";
 import { sessionConfigDir } from "../storage/paths.ts";
+import { SessionTerminator } from "./SessionTerminator.ts";
 
 export type TurnExecutionError = DbError | GitError | RuntimeError | ForgeError;
 
@@ -126,6 +127,29 @@ export class TurnExecutor extends Context.Service<
       const runtime = yield* WorkerRuntime;
       const agent = yield* AgentContract;
       const bus = yield* EventBus;
+      const terminator = yield* SessionTerminator;
+
+      /**
+       * Deferred terminal cleanup (M1.15): a ticket-closure signal that
+       * arrived while this session's turn was active only set the persisted
+       * marker — the executor finishes the job here, after the turn settled.
+       * Best-effort by design: a failure is logged, the marker survives, and
+       * the next replayed job (or the M2 retention fallback) converges.
+       */
+      const finalizeTermination = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const session = yield* sessionRepo.get(sessionId);
+          if (session.terminationRequestedAt === null) return;
+          const outcome = yield* terminator.terminate({ sessionId });
+          yield* Effect.logInfo("TurnExecutor: finalized deferred session teardown", {
+            sessionId,
+            outcome: outcome._tag,
+          });
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logError("TurnExecutor: deferred session teardown failed", error),
+          ),
+        );
 
       const evictableAt = () => new Date(Date.now() + config.cooldownMinutes * 60_000);
 
@@ -337,9 +361,21 @@ export class TurnExecutor extends Context.Service<
               taskRunId: job.taskRunId,
               state: taskRun.state,
             });
+            // a replayed job may be the only remaining driver of a teardown
+            // that was deferred and then lost to a crash — finish it here
+            yield* finalizeTermination(job.sessionId);
             return;
           }
           const session = yield* sessionRepo.get(job.sessionId);
+          if (session.state === "TERMINATED" || session.terminationRequestedAt !== null) {
+            // the terminal signal raced this dispatch: never start a turn on
+            // a terminating session — cancel the run instead
+            yield* taskRunRepo
+              .transition(job.taskRunId, "FAILED", { cause: "CANCELLED" })
+              .pipe(Effect.catchTag("StateTransitionError", () => Effect.void));
+            yield* finalizeTermination(job.sessionId);
+            return;
+          }
 
           yield* runTurn(job, session).pipe(
             // Orchestration errors (git/db/runtime) still settle the turn as
@@ -357,6 +393,11 @@ export class TurnExecutor extends Context.Service<
                 ),
               ),
             ),
+            // Runs while this session still occupies its dispatcher slot, so
+            // the same-session queue cannot dispatch concurrently with the
+            // teardown. Also runs on interrupt: reading a null marker is a
+            // no-op, and an unsettled (still-EXECUTING) run defers again.
+            Effect.ensuring(finalizeTermination(job.sessionId)),
           );
         }),
       };

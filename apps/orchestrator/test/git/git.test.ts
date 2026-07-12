@@ -34,6 +34,7 @@ const makeSession = (n: number, branch: string): Session =>
     claudeSessionUuid: null,
     prNumber: null,
     prUrl: null,
+    terminationRequestedAt: null,
     state: "WARM_IDLE",
     createdAt: new Date(),
     lastActivityAt: new Date(),

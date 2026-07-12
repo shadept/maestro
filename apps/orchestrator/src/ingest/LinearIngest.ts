@@ -1,6 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
   type DbError,
+  type GitError,
   IngestMappingError,
   type QueueError,
   type TaskContext,
@@ -124,7 +125,7 @@ export class LinearIngest extends Context.Service<
      */
     readonly handleDelivery: (
       delivery: LinearDelivery,
-    ) => Effect.Effect<IngestOutcome, LinearIngestError | DbError | QueueError>;
+    ) => Effect.Effect<IngestOutcome, LinearIngestError | DbError | QueueError | GitError>;
   }
 >()("maestro/ingest/LinearIngest") {
   static readonly layer = Layer.effect(

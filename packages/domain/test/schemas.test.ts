@@ -65,6 +65,7 @@ describe("Session", () => {
     claudeSessionUuid: null,
     prNumber: null,
     prUrl: null,
+    terminationRequestedAt: null,
     state: "WARM_IDLE",
     createdAt: new Date("2026-07-12T00:00:00Z"),
     lastActivityAt: new Date("2026-07-12T01:00:00Z"),
@@ -78,6 +79,14 @@ describe("Session", () => {
 
   it("accepts a stored claude session uuid", () => {
     roundTrip(Session, { ...valid, claudeSessionUuid: uuid(9) });
+  });
+
+  it("accepts a persisted termination marker (FUR-19 deferred teardown)", () => {
+    const marked = roundTrip(Session, {
+      ...valid,
+      terminationRequestedAt: new Date("2026-07-12T02:00:00Z"),
+    });
+    expect(marked.terminationRequestedAt).toEqual(new Date("2026-07-12T02:00:00Z"));
   });
 
   it("accepts stored PR coordinates and rejects a non-positive PR number", () => {

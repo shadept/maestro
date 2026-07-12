@@ -13,6 +13,7 @@ import { OutboxRepo } from "../../src/db/OutboxRepo.ts";
 import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 import { TaskRunRepo } from "../../src/db/TaskRunRepo.ts";
+import { SessionTerminator } from "../../src/engine/SessionTerminator.ts";
 import { TurnExecutor, type TurnOutcomePayload } from "../../src/engine/TurnExecutor.ts";
 import { EventBus } from "../../src/events/EventBus.ts";
 import { type ForgeCall, GitHubForge } from "../../src/forge/GitHubForge.ts";
@@ -23,12 +24,13 @@ import { branchNameFor, WorktreeManager } from "../../src/git/WorktreeManager.ts
 import { TurnQueue } from "../../src/queue/TurnQueue.ts";
 import { WorkerRuntime } from "../../src/runtime/WorkerRuntime.ts";
 import { worktreeDir } from "../../src/storage/paths.ts";
+import {
+  buildFakeAgentImage,
+  cleanStorageViaContainer,
+  FAKE_AGENT_IMAGE,
+} from "../support/fake-agent.ts";
 import { startTestDb, type TestDb } from "../support/pg.ts";
 
-// The fake agent (test/fixtures/fake-agent): a `claude` shell script honoring
-// the stream-json contract — emits valid events and commits a file into the
-// mounted worktree. Built once per suite; never calls any API.
-const FAKE_IMAGE = "maestro-fake-agent:fur15";
 const FAKE_SESSION_UUID = "7f0e8a3c-0000-4000-8000-feedfacecafe";
 
 type Services =
@@ -62,8 +64,11 @@ const makeLayer = (
     Layer.provideMerge(GitCache.layer),
     Layer.provide(Layer.mergeAll(RepoLocks.layer, GitHubForge.layerTest(forge))),
   );
+  const terminator = SessionTerminator.layer.pipe(Layer.provide(gitLayer));
   const executor = TurnExecutor.layer.pipe(
-    Layer.provide(Layer.mergeAll(AgentContract.layer, WorkerRuntime.layerLocalCli, gitLayer)),
+    Layer.provide(
+      Layer.mergeAll(AgentContract.layer, WorkerRuntime.layerLocalCli, gitLayer, terminator),
+    ),
   );
   return Layer.mergeAll(executor, TurnQueue.layer).pipe(
     Layer.provideMerge(repos),
@@ -73,7 +78,7 @@ const makeLayer = (
       AppConfig.layerTest({
         databaseUrl: testDb.connectionString,
         storageRoot,
-        workerImage: FAKE_IMAGE,
+        workerImage: FAKE_AGENT_IMAGE,
         turnTimeoutSeconds,
         maxConcurrentWorkers: 2,
       }),
@@ -142,29 +147,13 @@ beforeAll(async () => {
   git(originDir, "add", ".");
   git(originDir, "commit", "-m", "initial");
 
-  execFileSync(
-    "docker",
-    ["build", "-t", FAKE_IMAGE, path.resolve(import.meta.dirname, "../fixtures/fake-agent")],
-    { stdio: "pipe" },
-  );
+  buildFakeAgentImage();
 
   layer = makeLayer(120, { calls: forgeCalls });
 });
 
 afterAll(async () => {
-  // Workers run as container root; on Linux their files in the mounts are
-  // root-owned, so clean the storage tree with the same runtime before rm.
-  try {
-    execFileSync(
-      "docker",
-      ["run", "--rm", "-v", `${root}:${root}`, FAKE_IMAGE, "rm", "-rf", storageRoot],
-      {
-        stdio: "pipe",
-      },
-    );
-  } catch {
-    // best effort — plain rm below handles the macOS case
-  }
+  cleanStorageViaContainer(root, storageRoot);
   await rm(root, { recursive: true, force: true });
   await testDb.stop();
 });

@@ -11,7 +11,7 @@ import {
   sessionTransitions,
   type TicketReference,
 } from "@maestro/domain";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { Context, Effect, Layer, Option, Schema } from "effect";
 import { EventBus } from "../events/EventBus.ts";
 import { Db } from "./Db.ts";
@@ -29,6 +29,7 @@ const toSession = (row: typeof sessions.$inferSelect): Session =>
     prNumber: row.prNumber,
     prUrl: row.prUrl,
     state: row.state,
+    terminationRequestedAt: row.terminationRequestedAt,
     createdAt: row.createdAt,
     lastActivityAt: row.lastActivityAt,
   });
@@ -57,6 +58,13 @@ export class SessionRepo extends Context.Service<
      * current state may legally reach `to` per the domain transition table.
      */
     readonly transition: (id: SessionId, to: SessionState) => Effect.Effect<Session, DbError>;
+    /**
+     * Persists the terminal signal (sets terminationRequestedAt once; a second
+     * signal keeps the first timestamp — idempotent). The marker is what makes
+     * a teardown deferred behind an executing turn survive until that turn
+     * settles (M1.15).
+     */
+    readonly requestTermination: (id: SessionId) => Effect.Effect<Session, DbError>;
     readonly setClaudeSessionUuid: (id: SessionId, uuid: string) => Effect.Effect<Session, DbError>;
     /** Records the forge PR opened for this session's branch (first outbound publish). */
     readonly setPullRequest: (
@@ -159,6 +167,25 @@ export class SessionRepo extends Context.Service<
             from: current.state,
             to,
           });
+        }),
+        requestTermination: Effect.fn("SessionRepo.requestTermination")(function* (id: SessionId) {
+          const rows = yield* dbTry("SessionRepo.requestTermination")(() =>
+            client
+              .update(sessions)
+              .set({
+                terminationRequestedAt: sql`coalesce(${sessions.terminationRequestedAt}, now())`,
+              })
+              .where(eq(sessions.id, id))
+              .returning(),
+          );
+          const row = rows[0];
+          if (!row) {
+            return yield* new EntityNotFoundError({ entity: "Session", entityId: id });
+          }
+          const session = toSession(row);
+          // published like a transition: "terminating" is a UI-relevant change
+          yield* publishChanged(session);
+          return session;
         }),
         setClaudeSessionUuid: Effect.fn("SessionRepo.setClaudeSessionUuid")(function* (
           id: SessionId,

@@ -31,6 +31,13 @@ export const Session = Schema.Struct({
   /** Forge PR html URL, linked from ticket callbacks. Set together with prNumber. */
   prUrl: Schema.NullOr(Schema.NonEmptyString),
   state: SessionState,
+  /**
+   * When the ticket's terminal signal arrived while a turn was still active:
+   * teardown is deferred until that turn settles, and this persisted marker is
+   * what survives in between (set once, first signal wins). Null = no terminal
+   * signal received.
+   */
+  terminationRequestedAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
   /** Drives LRU eviction ordering. Updated on every turn activity. */
   lastActivityAt: Schema.Date,

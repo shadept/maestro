@@ -12,7 +12,11 @@ import { DeliveryRepo } from "../../src/db/DeliveryRepo.ts";
 import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 import { TaskRunRepo } from "../../src/db/TaskRunRepo.ts";
+import { SessionTerminator } from "../../src/engine/SessionTerminator.ts";
 import { EventBus } from "../../src/events/EventBus.ts";
+import { GitCache } from "../../src/git/GitCache.ts";
+import { RepoLocks } from "../../src/git/RepoLocks.ts";
+import { WorktreeManager } from "../../src/git/WorktreeManager.ts";
 import { WebhookRoutes } from "../../src/http/webhooks.ts";
 import { IngestPipeline } from "../../src/ingest/IngestPipeline.ts";
 import { LinearIngest } from "../../src/ingest/LinearIngest.ts";
@@ -48,7 +52,21 @@ beforeAll(async () => {
       AuditRepo.layer,
       DeliveryRepo.layer,
     );
-    const ingest = LinearIngest.layer.pipe(Layer.provideMerge(IngestPipeline.layer));
+    // FUR-19: recordTerminal now tears the session down, so the pipeline
+    // needs the real terminator (whose worktree removal is a guarded no-op
+    // here — no project was ever cloned under the test storage root).
+    const terminator = SessionTerminator.layer.pipe(
+      Layer.provide(
+        Layer.mergeAll(GitCache.layer, WorktreeManager.layer).pipe(
+          Layer.provideMerge(GitCache.layer),
+          Layer.provide(RepoLocks.layer),
+        ),
+      ),
+    );
+    const ingest = LinearIngest.layer.pipe(
+      Layer.provideMerge(IngestPipeline.layer),
+      Layer.provide(terminator),
+    );
     return HttpRouter.serve(WebhookRoutes, { disableLogger: true, disableListenLog: true }).pipe(
       Layer.provideMerge(NodeHttpServer.layerTest),
       Layer.provide(ingest),
@@ -261,15 +279,32 @@ describe("POST /api/webhooks/linear", () => {
     expect(response.json.outcome).toBe("Ignored");
   });
 
-  it("issue moved to done records the terminal signal without queuing a turn", async () => {
+  it("issue moved to done terminates the session and cancels its queued turns", async () => {
+    // FUR-19: the terminal signal is acted on, so capture the session first.
+    const session = Option.getOrThrow(await run(activeSession));
+
     const response = await run(post(signLinearDelivery(loadLinearFixture("issue-completed"))));
     expect(response.status).toBe(200);
     expect(response.json.outcome).toBe("TerminalRecorded");
 
-    const session = Option.getOrThrow(await run(activeSession));
-    // M1: the signal is recorded (audit log) — acting on it is M1.15.
-    expect(session.state).toBe("WARM_IDLE");
-    expect(await run(runsOf(session))).toHaveLength(2);
+    const after = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionRepo;
+        return yield* sessions.get(session.id);
+      }),
+    );
+    expect(after.state).toBe("TERMINATED");
+    expect(after.terminationRequestedAt).toBeInstanceOf(Date);
+    // the session no longer counts as active for its ticket
+    expect(await run(activeSession)).toEqual(Option.none());
+
+    // both queued (PENDING) turns were cancelled — nothing was executing
+    const runs = await run(runsOf(session));
+    expect(runs).toHaveLength(2);
+    for (const taskRun of runs) {
+      expect(taskRun.state).toBe("FAILED");
+      expect(taskRun.cause).toBe("CANCELLED");
+    }
 
     const audits = await run(
       Effect.gen(function* () {
@@ -282,27 +317,45 @@ describe("POST /api/webhooks/linear", () => {
     expect(entry?.priorState).toBe("WARM_IDLE");
   });
 
-  it("issue moved to canceled records the canceled signal", async () => {
+  it("a second terminal delivery for the same ticket is a no-op (double-close)", async () => {
+    const response = await run(post(signLinearDelivery(loadLinearFixture("issue-completed"))));
+    expect(response.status).toBe(200);
+    // no active session anymore — the signal has nothing to act on
+    expect(response.json.outcome).toBe("Ignored");
+    expect(await run(activeSession)).toEqual(Option.none());
+  });
+
+  it("issue moved to canceled terminates its session too", async () => {
+    // fresh session on a different ticket of the registered team
+    const TICKET_2 = "FUR-77";
+    const labelFixture = withData(loadLinearFixture("issue-labeled"), { identifier: TICKET_2 });
+    const started = await run(post(signLinearDelivery(labelFixture)));
+    expect(started.json.outcome).toBe("SessionStarted");
+
     const fixture = loadLinearFixture("issue-completed");
     const data = fixture.data as Record<string, unknown>;
     const patched = withData(fixture, {
+      identifier: TICKET_2,
       state: { ...(data.state as Record<string, unknown>), name: "Canceled", type: "canceled" },
     });
     const response = await run(post(signLinearDelivery(patched)));
     expect(response.status).toBe(200);
     expect(response.json.outcome).toBe("TerminalRecorded");
 
-    const session = Option.getOrThrow(await run(activeSession));
+    const terminated = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionRepo;
+        return yield* sessions.findActiveByTicket({ source: "linear", externalId: TICKET_2 });
+      }),
+    );
+    expect(terminated).toEqual(Option.none());
+
     const audits = await run(
       Effect.gen(function* () {
         const audit = yield* AuditRepo;
         return yield* audit.list;
       }),
     );
-    expect(
-      audits.some(
-        (a) => a.targetEntity === `session:${session.id}` && a.action === "ticket-canceled",
-      ),
-    ).toBe(true);
+    expect(audits.some((a) => a.action === "ticket-canceled")).toBe(true);
   });
 });

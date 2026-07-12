@@ -115,6 +115,14 @@ export class WorktreeManager extends Context.Service<
           yield* repoLocks.withRepoLock(args.project.id)(
             Effect.gen(function* () {
               const paths = pathsFor(args);
+              if (!(yield* exists(paths.gitDir))) {
+                // project never cloned (session terminated before its first
+                // turn provisioned) — no git state to clean, just the dir
+                yield* Effect.promise(() =>
+                  rm(paths.worktreePath, { recursive: true, force: true }),
+                );
+                return;
+              }
               if (yield* exists(paths.worktreePath)) {
                 yield* runGit(["worktree", "remove", "--force", paths.worktreePath], {
                   cwd: paths.gitDir,

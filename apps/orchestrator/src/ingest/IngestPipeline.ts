@@ -1,5 +1,6 @@
 import type {
   DbError,
+  GitError,
   Project,
   QueueError,
   SessionId,
@@ -11,6 +12,7 @@ import { Context, Effect, Layer, Option } from "effect";
 import { AuditRepo } from "../db/AuditRepo.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
 import { TaskRunRepo } from "../db/TaskRunRepo.ts";
+import { SessionTerminator } from "../engine/SessionTerminator.ts";
 import { branchNameFor } from "../git/WorktreeManager.ts";
 import { TurnQueue } from "../queue/TurnQueue.ts";
 
@@ -30,7 +32,7 @@ export type IngestOutcome =
   | { readonly _tag: "Duplicate" }
   | { readonly _tag: "Ignored"; readonly reason: string };
 
-export type IngestPipelineError = DbError | QueueError;
+export type IngestPipelineError = DbError | QueueError | GitError;
 
 /**
  * The forge-agnostic half of ingestion (Tech Requirements §5): normalized
@@ -63,9 +65,12 @@ export class IngestPipeline extends Context.Service<
       readonly context: TaskContext;
     }) => Effect.Effect<IngestOutcome, IngestPipelineError>;
     /**
-     * The ticket reached a terminal platform state (done/canceled). M1
-     * records the signal in the audit log only; acting on it (worktree
-     * teardown, session TERMINATED) is the M1.15 lifecycle ticket.
+     * The ticket reached a terminal platform state (done/canceled) — the
+     * single authoritative teardown trigger (PRD §4.1). Audit-logs the signal
+     * and hands the session to SessionTerminator: queued turns cancelled,
+     * session TERMINATED, worktree + config dir purged (deferred until an
+     * executing turn settles). No active session (incl. a second signal
+     * after teardown) = Ignored — the double-close no-op.
      */
     readonly recordTerminal: (args: {
       readonly ticket: TicketReference;
@@ -81,6 +86,7 @@ export class IngestPipeline extends Context.Service<
       const taskRunRepo = yield* TaskRunRepo;
       const auditRepo = yield* AuditRepo;
       const queue = yield* TurnQueue;
+      const terminator = yield* SessionTerminator;
 
       const createTurn = (sessionId: SessionId, context: TaskContext) =>
         Effect.gen(function* () {
@@ -139,6 +145,7 @@ export class IngestPipeline extends Context.Service<
             targetEntity: `session:${session.value.id}`,
             priorState: session.value.state,
           });
+          yield* terminator.terminate({ sessionId: session.value.id });
           return { _tag: "TerminalRecorded", sessionId: session.value.id } satisfies IngestOutcome;
         }),
       };

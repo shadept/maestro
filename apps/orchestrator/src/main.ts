@@ -17,6 +17,7 @@ import { OutboxRepo } from "./db/OutboxRepo.ts";
 import { ProjectRepo } from "./db/ProjectRepo.ts";
 import { SessionRepo } from "./db/SessionRepo.ts";
 import { TaskRunRepo } from "./db/TaskRunRepo.ts";
+import { SessionTerminator } from "./engine/SessionTerminator.ts";
 import { TurnExecutor } from "./engine/TurnExecutor.ts";
 import { EventBus } from "./events/EventBus.ts";
 import { GitHubForge } from "./forge/GitHubForge.ts";
@@ -102,8 +103,20 @@ const GitLive = Layer.mergeAll(GitCache.layer, WorktreeManager.layer, OutboundGi
   Layer.provide(Layer.mergeAll(RepoLocks.layer, GitHubForge.layer)),
 );
 
+// Shared by TurnExecutor (deferred finalize after an in-flight turn settles)
+// and IngestPipeline (terminal signal from ingest) — same layer reference, so
+// memoization yields one instance.
+const SessionTerminatorLive = SessionTerminator.layer.pipe(Layer.provide(GitLive));
+
 const TurnExecutorLive = TurnExecutor.layer.pipe(
-  Layer.provide(Layer.mergeAll(AgentContract.layer, WorkerRuntime.layerFromConfig, GitLive)),
+  Layer.provide(
+    Layer.mergeAll(
+      AgentContract.layer,
+      WorkerRuntime.layerFromConfig,
+      GitLive,
+      SessionTerminatorLive,
+    ),
+  ),
   Layer.provideMerge(ReposLive),
 );
 
@@ -145,7 +158,10 @@ const CallbackWorkerLive = Layer.effectDiscard(
 // Linear webhook ingestion (FUR-18): the Linear adapter maps deliveries into
 // the forge-agnostic pipeline (sessions/turns/queue). M2's generic REST API
 // plugs a second adapter into the same IngestPipeline.
-const IngestLive = LinearIngest.layer.pipe(Layer.provideMerge(IngestPipeline.layer));
+const IngestLive = LinearIngest.layer.pipe(
+  Layer.provideMerge(IngestPipeline.layer),
+  Layer.provide(SessionTerminatorLive),
+);
 
 // Health probes, the SSE firehose, the admin read API (FUR-16), the admin UI
 // bundle at `/` (FUR-17), and the Linear webhook endpoint (FUR-18). Handlers

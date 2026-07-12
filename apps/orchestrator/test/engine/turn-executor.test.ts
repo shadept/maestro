@@ -24,7 +24,8 @@ import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 import { TaskRunRepo } from "../../src/db/TaskRunRepo.ts";
 import { SessionTerminator } from "../../src/engine/SessionTerminator.ts";
-import { TurnExecutor, type TurnOutcomePayload } from "../../src/engine/TurnExecutor.ts";
+import { TurnExecutor } from "../../src/engine/TurnExecutor.ts";
+import { type TurnOutcomePayload, TurnSettlement } from "../../src/engine/TurnSettlement.ts";
 import { EventBus } from "../../src/events/EventBus.ts";
 import { type ForgeCall, GitHubForge } from "../../src/forge/GitHubForge.ts";
 import { GitCache } from "../../src/git/GitCache.ts";
@@ -106,7 +107,13 @@ const makeLayer = (
   const terminator = SessionTerminator.layer.pipe(Layer.provide(gitLayer));
   const executor = TurnExecutor.layer.pipe(
     Layer.provide(
-      Layer.mergeAll(AgentContract.layer, WorkerRuntime.layerLocalCli, gitLayer, terminator),
+      Layer.mergeAll(
+        AgentContract.layer,
+        WorkerRuntime.layerLocalCli,
+        gitLayer,
+        terminator,
+        TurnSettlement.layer,
+      ),
     ),
   );
   return Layer.mergeAll(executor, TurnQueue.layer).pipe(

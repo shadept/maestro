@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { Effect, Exit, Fiber, Layer, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -106,6 +107,74 @@ describe("WorkerRuntime.layerLocalCli (docker)", () => {
     expect(exit.cause).toBe("CANCELLED");
     expect(after).toBe("EXITED");
   }, 30_000);
+
+  it("status resolves by container name across runtime instances (restart survival)", async () => {
+    // Every run() builds a FRESH layer (fresh in-memory worker map), so the
+    // second call simulates an orchestrator that restarted after starting
+    // this worker: the handle is reconstructed from the container name alone.
+    const name = `maestro-test-${Math.random().toString(36).slice(2, 10)}`;
+    await run(
+      Effect.gen(function* () {
+        const runtime = yield* WorkerRuntime;
+        const handle = yield* runtime.start(spec({ name, command: ["sleep", "20"] }));
+        expect(handle.id).toBe(name);
+      }),
+    );
+    // start() resolves when the docker CLIENT spawns; wait until the daemon
+    // reports the container actually running before probing across instances
+    const runningDeadline = Date.now() + 15_000;
+    while (Date.now() < runningDeadline) {
+      try {
+        const state = execFileSync("docker", ["inspect", "--format", "{{.State.Running}}", name], {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        }).trim();
+        if (state === "true") break;
+      } catch {
+        // not created yet
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    try {
+      const status = await run(
+        Effect.gen(function* () {
+          const runtime = yield* WorkerRuntime;
+          return yield* runtime.status({ id: name });
+        }),
+      );
+      expect(status).toBe("RUNNING");
+    } finally {
+      try {
+        execFileSync("docker", ["kill", name], { stdio: "pipe" });
+      } catch {
+        // never assert-masking: the container may already be gone
+      }
+    }
+    // killed + auto-removed (--rm): the name eventually resolves to not-found
+    const deadline = Date.now() + 15_000;
+    let gone = false;
+    while (!gone && Date.now() < deadline) {
+      const probe = await run(
+        Effect.gen(function* () {
+          const runtime = yield* WorkerRuntime;
+          return yield* Effect.result(runtime.status({ id: name }));
+        }),
+      );
+      gone = probe._tag === "Failure" && probe.failure._tag === "WorkerNotFoundError";
+      if (!gone) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    expect(gone).toBe(true);
+  }, 60_000);
+
+  it("status for a container name no runtime has ever seen fails WorkerNotFoundError", async () => {
+    const error = await run(
+      Effect.gen(function* () {
+        const runtime = yield* WorkerRuntime;
+        return yield* runtime.status({ id: "maestro-test-definitely-not-there" }).pipe(Effect.flip);
+      }),
+    );
+    expect(error._tag).toBe("WorkerNotFoundError");
+  });
 
   it("unknown handle fails with WorkerNotFoundError", async () => {
     const error = await run(

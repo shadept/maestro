@@ -1,4 +1,4 @@
-import type { TurnOutcomePayload } from "../engine/TurnExecutor.ts";
+import type { TurnOutcomePayload } from "../engine/TurnSettlement.ts";
 
 // Platform-agnostic turn-result rendering (markdown works on every target we
 // plan for). The generic-API callback (M2) reuses this; only delivery is

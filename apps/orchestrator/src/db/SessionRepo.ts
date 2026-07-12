@@ -55,6 +55,12 @@ export class SessionRepo extends Context.Service<
       ticket: TicketReference,
     ) => Effect.Effect<Option.Option<Session>, DbError>;
     /**
+     * Sessions whose terminal signal is persisted but whose teardown never
+     * finished (marker set, not yet TERMINATED) — the startup reconciliation
+     * sweep (FUR-40) re-drives SessionTerminator.terminate for each.
+     */
+    readonly listTerminationRequested: () => Effect.Effect<ReadonlyArray<Session>, DbError>;
+    /**
      * Compare-and-swap state transition: the UPDATE only matches rows whose
      * current state may legally reach `to` per the domain transition table.
      */
@@ -154,6 +160,17 @@ export class SessionRepo extends Context.Service<
               ),
           );
           return Option.map(Option.fromNullishOr(rows[0]), toSession);
+        }),
+        listTerminationRequested: Effect.fn("SessionRepo.listTerminationRequested")(function* () {
+          const rows = yield* dbTry("SessionRepo.listTerminationRequested")(() =>
+            client
+              .select()
+              .from(sessions)
+              .where(
+                and(isNotNull(sessions.terminationRequestedAt), ne(sessions.state, "TERMINATED")),
+              ),
+          );
+          return rows.map(toSession);
         }),
         transition: Effect.fn("SessionRepo.transition")(function* (
           id: SessionId,

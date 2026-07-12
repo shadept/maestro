@@ -18,11 +18,12 @@ import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 import { TaskRunRepo } from "../../src/db/TaskRunRepo.ts";
 import { SessionTerminator } from "../../src/engine/SessionTerminator.ts";
+import { TurnExecutor } from "../../src/engine/TurnExecutor.ts";
 import {
   CONSECUTIVE_FAILURE_LIMIT,
-  TurnExecutor,
   TurnOutcomePayload,
-} from "../../src/engine/TurnExecutor.ts";
+  TurnSettlement,
+} from "../../src/engine/TurnSettlement.ts";
 import { EventBus } from "../../src/events/EventBus.ts";
 import { GitHubForge } from "../../src/forge/GitHubForge.ts";
 import { GitCache } from "../../src/git/GitCache.ts";
@@ -183,7 +184,13 @@ beforeAll(async () => {
   const terminator = SessionTerminator.layer.pipe(Layer.provide(gitLayer));
   const executor = TurnExecutor.layer.pipe(
     Layer.provide(
-      Layer.mergeAll(AgentContract.layer, WorkerRuntime.layerLocalCli, gitLayer, terminator),
+      Layer.mergeAll(
+        AgentContract.layer,
+        WorkerRuntime.layerLocalCli,
+        gitLayer,
+        terminator,
+        TurnSettlement.layer,
+      ),
     ),
   );
   const ingest = LinearIngest.layer.pipe(

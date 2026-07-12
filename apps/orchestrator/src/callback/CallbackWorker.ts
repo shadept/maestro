@@ -2,7 +2,7 @@ import { CallbackDeliveryError, type DbError } from "@maestro/domain";
 import { Context, Effect, Layer, Schema } from "effect";
 import { type OutboxEntry, OutboxRepo } from "../db/OutboxRepo.ts";
 import { TaskRunRepo } from "../db/TaskRunRepo.ts";
-import { TurnOutcomePayload } from "../engine/TurnExecutor.ts";
+import { TurnOutcomePayload } from "../engine/TurnSettlement.ts";
 import { formatTurnComment } from "./format.ts";
 import { LinearCallback, linearIssueIdFrom } from "./LinearCallback.ts";
 

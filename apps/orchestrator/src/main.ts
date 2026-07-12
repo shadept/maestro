@@ -18,7 +18,9 @@ import { ProjectRepo } from "./db/ProjectRepo.ts";
 import { SessionRepo } from "./db/SessionRepo.ts";
 import { TaskRunRepo } from "./db/TaskRunRepo.ts";
 import { SessionTerminator } from "./engine/SessionTerminator.ts";
+import { StartupReconciler } from "./engine/StartupReconciler.ts";
 import { TurnExecutor } from "./engine/TurnExecutor.ts";
+import { TurnSettlement } from "./engine/TurnSettlement.ts";
 import { EventBus } from "./events/EventBus.ts";
 import { GitHubForge } from "./forge/GitHubForge.ts";
 import { GitCache } from "./git/GitCache.ts";
@@ -108,6 +110,11 @@ const GitLive = Layer.mergeAll(GitCache.layer, WorktreeManager.layer, OutboundGi
 // memoization yields one instance.
 const SessionTerminatorLive = SessionTerminator.layer.pipe(Layer.provide(GitLive));
 
+// Shared settle path (turn transition + outbox callback + circuit breaker):
+// one layer reference for TurnExecutor and StartupReconciler, so memoization
+// yields a single instance and the two settle paths cannot drift.
+const TurnSettlementLive = TurnSettlement.layer;
+
 const TurnExecutorLive = TurnExecutor.layer.pipe(
   Layer.provide(
     Layer.mergeAll(
@@ -115,7 +122,17 @@ const TurnExecutorLive = TurnExecutor.layer.pipe(
       WorkerRuntime.layerFromConfig,
       GitLive,
       SessionTerminatorLive,
+      TurnSettlementLive,
     ),
+  ),
+  Layer.provideMerge(ReposLive),
+);
+
+// Startup reconciliation (FUR-40): settles crash-orphaned turns and re-drives
+// interrupted teardowns before any new dispatch (see TurnWorkerLive).
+const StartupReconcilerLive = StartupReconciler.layer.pipe(
+  Layer.provide(
+    Layer.mergeAll(WorkerRuntime.layerFromConfig, SessionTerminatorLive, TurnSettlementLive),
   ),
   Layer.provideMerge(ReposLive),
 );
@@ -126,14 +143,32 @@ const TurnExecutorLive = TurnExecutor.layer.pipe(
  * fork simply parks until pg-boss is up and then registers the dispatcher
  * into this layer's scope; boot (and the /livez//readyz probes, verified in
  * FUR-8) never depends on the DB.
+ *
+ * Startup reconciliation (FUR-40) runs FIRST, inside the same background
+ * fiber: work(...) only registers once reconcile() has succeeded, so no new
+ * dispatch can race the orphan sweep. The reconcile retry keeps the
+ * boot-without-DB invariant — a dead database just means the whole fiber
+ * (reconcile, then worker registration) keeps retrying in the background
+ * while /livez stays green. reconcile() is idempotent, so retrying a
+ * partially-applied sweep is safe.
  */
 const TurnWorkerLive = Layer.effectDiscard(
   Effect.gen(function* () {
+    const reconciler = yield* StartupReconciler;
     const executor = yield* TurnExecutor;
     const queue = yield* TurnQueue;
-    yield* Effect.forkScoped(queue.work(executor.execute));
+    yield* Effect.forkScoped(
+      reconciler.reconcile().pipe(
+        Effect.tapError((error) =>
+          Effect.logWarning("startup reconciliation failed; retrying", error),
+        ),
+        Effect.retry(Schedule.spaced("5 seconds")),
+        Effect.andThen(Effect.logInfo("startup reconciliation complete; registering turn worker")),
+        Effect.andThen(queue.work(executor.execute)),
+      ),
+    );
   }),
-).pipe(Layer.provide(TurnExecutorLive));
+).pipe(Layer.provide(Layer.mergeAll(TurnExecutorLive, StartupReconcilerLive)));
 
 /**
  * Drains the callback outbox: turn results become ticket comments (FUR-18).

@@ -12,7 +12,7 @@ import { ProjectRepo } from "../../src/db/ProjectRepo.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 import { outbox } from "../../src/db/schema/index.ts";
 import { TaskRunRepo } from "../../src/db/TaskRunRepo.ts";
-import type { TurnOutcomePayload } from "../../src/engine/TurnExecutor.ts";
+import type { TurnOutcomePayload } from "../../src/engine/TurnSettlement.ts";
 import { EventBus } from "../../src/events/EventBus.ts";
 import { startTestDb, type TestDb } from "../support/pg.ts";
 

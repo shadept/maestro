@@ -2,7 +2,7 @@ import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { formatTurnComment, MAESTRO_COMMENT_MARKER } from "../../src/callback/format.ts";
-import { TurnOutcomePayload } from "../../src/engine/TurnExecutor.ts";
+import { TurnOutcomePayload } from "../../src/engine/TurnSettlement.ts";
 
 // FUR-39 layer 1: ingest drops any comment whose body starts with
 // MAESTRO_COMMENT_MARKER. These tests pin the other side of that contract —

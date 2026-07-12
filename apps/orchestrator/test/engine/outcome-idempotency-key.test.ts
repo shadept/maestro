@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { outcomeIdempotencyKey, TurnOutcomePayload } from "../../src/engine/TurnExecutor.ts";
+import { outcomeIdempotencyKey, TurnOutcomePayload } from "../../src/engine/TurnSettlement.ts";
 
 // FUR-39 layer 3: failure-comment dedup happens at ENQUEUE time, in the outbox
 // idempotency key — identical failure text on a session maps to the same key,

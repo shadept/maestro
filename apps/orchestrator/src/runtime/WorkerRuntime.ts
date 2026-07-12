@@ -1,5 +1,4 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import {
   NotImplementedError,
   type RuntimeError,
@@ -30,6 +29,12 @@ export interface WorkerSpec {
   readonly timeoutMillis: number;
 }
 
+/**
+ * Handle id = the container name (WorkerSpec.name). Deterministic on purpose:
+ * a handle can be reconstructed from the name alone, so `status` works across
+ * orchestrator restarts (startup reconciliation, FUR-40) — the in-memory
+ * worker map is only a fast path for workers this process started.
+ */
 export interface WorkerHandle {
   readonly id: string;
 }
@@ -161,7 +166,7 @@ export class WorkerRuntime extends Context.Service<
           });
 
           worker.timer = setTimeout(() => killWorker(worker, "TIMEOUT"), spec.timeoutMillis);
-          const handle: WorkerHandle = { id: randomUUID() };
+          const handle: WorkerHandle = { id: spec.name };
           workers.set(handle.id, worker);
           return handle;
         }),
@@ -176,8 +181,31 @@ export class WorkerRuntime extends Context.Service<
           killWorker(worker, "CANCELLED");
         }),
         status: Effect.fn("WorkerRuntime.status")(function* (handle: WorkerHandle) {
-          const worker = yield* get(handle);
-          return worker.exited ? ("EXITED" as const) : ("RUNNING" as const);
+          const worker = workers.get(handle.id);
+          if (worker) return worker.exited ? ("EXITED" as const) : ("RUNNING" as const);
+          // Cross-restart lookup (FUR-40): the handle id is the container
+          // name, so a worker started by a previous orchestrator process is
+          // still addressable — ask the runtime. Any inspect failure (unknown
+          // name, daemon down, template without `inspect`) reads as
+          // not-found: if the runtime cannot see the container, neither can a
+          // turn — treating it as gone is the safe answer for reconciliation.
+          const bin = templateArgv[0];
+          if (!bin) {
+            return yield* new WorkerNotFoundError({ workerId: handle.id });
+          }
+          return yield* Effect.callback<WorkerStatus, WorkerNotFoundError>((resume) => {
+            execFile(
+              bin,
+              ["inspect", "--format", "{{.State.Running}}", handle.id],
+              (error, stdout) => {
+                if (error) {
+                  resume(Effect.fail(new WorkerNotFoundError({ workerId: handle.id })));
+                } else {
+                  resume(Effect.succeed(stdout.trim() === "true" ? "RUNNING" : "EXITED"));
+                }
+              },
+            );
+          });
         }),
       };
     }),

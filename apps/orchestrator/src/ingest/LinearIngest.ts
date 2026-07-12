@@ -264,8 +264,8 @@ export class LinearIngest extends Context.Service<
           // a personal key (single-account setups), where the author id can't
           // separate Maestro from the human. The other FUR-39 layers live
           // elsewhere: the consecutive-failure circuit breaker in
-          // TurnExecutor/IngestPipeline, failure-comment dedup in the outbox
-          // idempotency key (TurnExecutor.outcomeIdempotencyKey).
+          // TurnSettlement/IngestPipeline, failure-comment dedup in the outbox
+          // idempotency key (TurnSettlement.outcomeIdempotencyKey).
           if (comment.body.startsWith(MAESTRO_COMMENT_MARKER)) {
             return {
               _tag: "Ignored",

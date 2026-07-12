@@ -3,9 +3,10 @@ import type { EventStore } from "../store.ts";
 
 // System status bar: SSE connection state plus the latest SystemStatus (which
 // arrives once per subscription in M1 — snapshot-only) with the live active
-// turn count layered on top from QueueChanged events.
+// turn count layered on top from QueueChanged events. Also hosts the log-out
+// affordance — the manual escape hatch for a wrong persisted token.
 
-export const StatusBar = (props: { store: EventStore }) => {
+export const StatusBar = (props: { store: EventStore; onLogout: () => void }) => {
   const activeTurns = () => props.store.activeTurns() ?? props.store.systemStatus()?.activeTurns;
 
   return (
@@ -29,6 +30,9 @@ export const StatusBar = (props: { store: EventStore }) => {
           </>
         )}
       </Show>
+      <button type="button" class="logout" onClick={() => props.onLogout()}>
+        log out
+      </button>
     </header>
   );
 };

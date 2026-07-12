@@ -74,6 +74,21 @@ main {
   margin-right: 8px;
 }
 
+.status-bar .logout {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.status-bar .logout:hover {
+  color: var(--text);
+}
+
 /* chips */
 .chip {
   display: inline-block;

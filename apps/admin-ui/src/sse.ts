@@ -19,12 +19,26 @@ const eventTags: ReadonlyArray<string> = MaestroEvent.members.map(
  * a disposer. EventSource auto-reconnects; every open (first or re-) triggers
  * `resetForSnapshot` because the server replays a fresh snapshot per
  * subscription.
+ *
+ * `onAuthRejected` fires when the stream fails permanently. Per spec,
+ * EventSource retries transient failures itself (readyState stays CONNECTING)
+ * but a non-2xx response — for this endpoint, the 401 token reject — fails
+ * the connection for good (readyState CLOSED, no retry). That CLOSED state is
+ * the only auth-failure signal EventSource exposes, so it is what we hook to
+ * drop a stale stored token instead of spinning on "reconnecting" forever.
  */
-export const connectEvents = (token: string, store: EventStore): (() => void) => {
+export const connectEvents = (
+  token: string,
+  store: EventStore,
+  onAuthRejected?: () => void,
+): (() => void) => {
   const source = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
 
   source.onopen = () => store.resetForSnapshot();
-  source.onerror = () => store.setConnection("reconnecting");
+  source.onerror = () => {
+    if (source.readyState === EventSource.CLOSED) onAuthRejected?.();
+    else store.setConnection("reconnecting");
+  };
 
   const onEvent = (message: MessageEvent<string>): void => {
     try {

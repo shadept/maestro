@@ -1,7 +1,9 @@
 import { createSignal, Show } from "solid-js";
 
-// Admin-token entry. The token is handed straight to the parent and kept in a
-// signal — deliberately never written to localStorage/sessionStorage.
+// Admin-token entry. The token is handed straight to the parent, which
+// verifies it and persists it to localStorage (token-storage.ts) — FUR-17's
+// "in memory only" rule was explicitly overridden by user request so the UI
+// auto-logs-in across refreshes and dev reloads.
 
 export const TokenGate = (props: {
   error: string | null;

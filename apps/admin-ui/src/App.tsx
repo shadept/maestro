@@ -3,6 +3,7 @@ import { type AdminClient, createAdminClient } from "./api.ts";
 import { useRoute } from "./route.ts";
 import { connectEvents } from "./sse.ts";
 import { createEventStore } from "./store.ts";
+import { clearToken, loadToken, saveToken } from "./token-storage.ts";
 import { SessionDetail } from "./views/SessionDetail.tsx";
 import { SessionList } from "./views/SessionList.tsx";
 import { StatusBar } from "./views/StatusBar.tsx";
@@ -14,7 +15,9 @@ import { TokenGate } from "./views/TokenGate.tsx";
 
 export const App = () => {
   const store = createEventStore();
-  // The token lives in this signal only — in memory, never persisted (FUR-17).
+  // FUR-17 kept the token in this signal only, never persisted. Explicitly
+  // overridden by user request: the token now round-trips through
+  // localStorage (token-storage.ts) so refreshes and dev reloads auto-login.
   const [client, setClient] = createSignal<AdminClient | null>(null);
   const [gateError, setGateError] = createSignal<string | null>(null);
   const [connecting, setConnecting] = createSignal(false);
@@ -22,22 +25,45 @@ export const App = () => {
   let disconnect: (() => void) | undefined;
   onCleanup(() => disconnect?.());
 
+  const logout = (message: string | null = null): void => {
+    clearToken();
+    disconnect?.();
+    disconnect = undefined;
+    setGateError(message);
+    setClient(null);
+  };
+
+  const connect = (token: string): void => {
+    // A stale stored token (orchestrator restarted with a new
+    // MAESTRO_ADMIN_TOKEN) 401s the SSE stream, which closes EventSource for
+    // good — we clear the token and fall back to the gate rather than loop.
+    disconnect = connectEvents(token, store, () =>
+      logout("Stored token rejected — enter the current MAESTRO_ADMIN_TOKEN."),
+    );
+    setClient(() => createAdminClient(token));
+  };
+
   const unlock = async (token: string) => {
     setConnecting(true);
     setGateError(null);
-    const candidate = createAdminClient(token);
     try {
       // Probe the API before trusting the token; a 401 stays on the gate.
-      await candidate.listSessions();
+      await createAdminClient(token).listSessions();
     } catch {
       setGateError("Token rejected — check MAESTRO_ADMIN_TOKEN.");
       setConnecting(false);
       return;
     }
-    disconnect = connectEvents(token, store);
-    setClient(() => candidate);
+    saveToken(token);
+    connect(token);
     setConnecting(false);
   };
+
+  // Auto-login: read storage synchronously during setup so a stored token
+  // renders the app directly — no gate flash on refresh. If the token turned
+  // stale, the SSE auth-reject path above drops back to the gate.
+  const stored = loadToken();
+  if (stored !== null) connect(stored);
 
   const route = useRoute();
 
@@ -48,7 +74,7 @@ export const App = () => {
     >
       {(admin) => (
         <div class="app">
-          <StatusBar store={store} />
+          <StatusBar store={store} onLogout={() => logout()} />
           <main>
             <Show
               when={route().view === "session" ? route() : null}

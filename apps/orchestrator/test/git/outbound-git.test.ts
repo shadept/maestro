@@ -114,6 +114,19 @@ const publish = (session: Session, project: Project, context: TaskContext) =>
     }),
   );
 
+const publishWithProposal = (
+  session: Session,
+  project: Project,
+  context: TaskContext,
+  proposal: { title: string; body: string },
+) =>
+  run(
+    Effect.gen(function* () {
+      const outbound = yield* OutboundGit;
+      return yield* outbound.publish({ session, project, context, proposal });
+    }),
+  );
+
 const freshSession = (session: Session) =>
   run(
     Effect.gen(function* () {
@@ -129,7 +142,7 @@ const commit = (worktree: string, file: string, message: string) => {
 };
 
 describe("OutboundGit.publish", () => {
-  it("first publish pushes and opens a draft PR; second updates; then no-ops", async () => {
+  it("first publish pushes and opens a ready (non-draft) PR; second updates; then no-ops", async () => {
     const { project, session, paths } = await setupSession("FUR-201");
     const callsBefore = forgeCalls.length;
 
@@ -149,7 +162,7 @@ describe("OutboundGit.publish", () => {
     expect(forgeCalls.length).toBe(callsBefore + 1);
     const createCall = forgeCalls[callsBefore];
     expect(createCall?.op).toBe("create");
-    expect(createCall?.args.draft).toBe(true);
+    expect(createCall?.args.draft).toBe(false);
     expect(createCall?.args.headBranch).toBe(session.gitBranch);
     expect(createCall?.args.baseBranch).toBe("main");
     expect(createCall?.args.title).toBe("FUR-201: Do the work");
@@ -227,7 +240,7 @@ describe("OutboundGit.publish", () => {
     expect(after.prNumber).toBe(outcome.prNumber);
   });
 
-  it("respects project git conventions: base branch and non-draft PRs", async () => {
+  it("respects project git conventions: base branch and draft-PR override", async () => {
     const branch = "develop";
     git(originDir, "branch", branch);
     const { project, session, paths } = await run(
@@ -238,7 +251,7 @@ describe("OutboundGit.publish", () => {
         const manager = yield* WorktreeManager;
         const project = yield* projectRepo.create({
           repoGitUrl: `file://${originDir}`,
-          gitConventions: { baseBranch: branch, draftPr: false },
+          gitConventions: { baseBranch: branch, draftPr: true },
         });
         const session = yield* sessionRepo.create({
           projectId: project.id,
@@ -257,6 +270,33 @@ describe("OutboundGit.publish", () => {
     expect(outcome._tag).toBe("Published");
     const call = forgeCalls[callsBefore];
     expect(call?.args.baseBranch).toBe(branch);
-    expect(call?.args.draft).toBe(false);
+    expect(call?.args.draft).toBe(true);
+  });
+
+  it("agent proposal drives PR title and body; footer keeps the ticket reference", async () => {
+    const { project, session, paths } = await setupSession("FUR-205");
+    commit(paths.worktreePath, "work.txt", "turn one");
+    const callsBefore = forgeCalls.length;
+    const outcome = await publishWithProposal(session, project, taskContext("FUR-205", "Ignored"), {
+      title: "Teach the sweeper to sweep",
+      body: "## What\nSweeping.\n\n## Why\nDust.",
+    });
+    expect(outcome._tag).toBe("Published");
+    const call = forgeCalls[callsBefore];
+    expect(call?.args.title).toBe("FUR-205: Teach the sweeper to sweep");
+    expect(call?.args.body).toContain("## What\nSweeping.");
+    expect(call?.args.body).toContain("Ticket: FUR-205");
+    expect(call?.args.body).toContain(`Maestro session: ${session.id}`);
+  });
+
+  it("proposal title already carrying the ticket id is not double-prefixed", async () => {
+    const { project, session, paths } = await setupSession("FUR-206");
+    commit(paths.worktreePath, "work.txt", "turn one");
+    const callsBefore = forgeCalls.length;
+    await publishWithProposal(session, project, taskContext("FUR-206", "Ignored"), {
+      title: "FUR-206: self-titled",
+      body: "",
+    });
+    expect(forgeCalls[callsBefore]?.args.title).toBe("FUR-206: self-titled");
   });
 });

@@ -11,7 +11,13 @@ import {
 import { Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { AgentContract, type AgentEvent, standingOrders } from "../../src/agent/AgentContract.ts";
+import {
+  AgentContract,
+  type AgentEvent,
+  extractPrProposal,
+  PR_BLOCK_MARKER,
+  standingOrders,
+} from "../../src/agent/AgentContract.ts";
 import { AppConfig } from "../../src/config/AppConfig.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 
@@ -414,5 +420,42 @@ describe("AgentContract.persistSessionUuid", () => {
     );
     expect(recorder.calls).toHaveLength(1);
     expect(recorder.calls[0]?.uuid).toBe(CLAUDE_UUID);
+  });
+});
+
+describe("extractPrProposal", () => {
+  it("splits text and trailing proposal at the marker", () => {
+    const finalText = `All done, gates green.\n\n${PR_BLOCK_MARKER}\nAdd retention sweeper\n\nImplements the sweep.\nWith details.`;
+    const { text, proposal } = extractPrProposal(finalText);
+    expect(text).toBe("All done, gates green.");
+    expect(proposal).toEqual({
+      title: "Add retention sweeper",
+      body: "Implements the sweep.\nWith details.",
+    });
+  });
+
+  it("returns no proposal when the marker is absent", () => {
+    const { text, proposal } = extractPrProposal("Just an answer, no commit.");
+    expect(text).toBe("Just an answer, no commit.");
+    expect(proposal).toBeNull();
+  });
+
+  it("returns no proposal for a marker with nothing after it", () => {
+    const finalText = `Done.\n${PR_BLOCK_MARKER}\n\n`;
+    const { text, proposal } = extractPrProposal(finalText);
+    expect(text).toBe(finalText);
+    expect(proposal).toBeNull();
+  });
+
+  it("uses the LAST marker when the text quotes one earlier", () => {
+    const finalText = `The orders say to end with ${PR_BLOCK_MARKER}.\n${PR_BLOCK_MARKER}\nquoted? no — this line is text\n\nbecause the real block follows\n${PR_BLOCK_MARKER}\nReal title\n\nReal body.`;
+    const { proposal } = extractPrProposal(finalText);
+    expect(proposal).toEqual({ title: "Real title", body: "Real body." });
+  });
+
+  it("tolerates an empty body (title-only proposal)", () => {
+    const { text, proposal } = extractPrProposal(`Done.\n${PR_BLOCK_MARKER}\nTitle only`);
+    expect(text).toBe("Done.");
+    expect(proposal).toEqual({ title: "Title only", body: "" });
   });
 });

@@ -309,7 +309,7 @@ describe("TurnExecutor", () => {
     );
     const createCall = forgeCalls.find((c) => c.args.headBranch === session.gitBranch);
     expect(createCall?.op).toBe("create");
-    expect(createCall?.args.draft).toBe(true);
+    expect(createCall?.args.draft).toBe(false);
     expect(createCall?.args.title).toBe("FUR-101: Ticket FUR-101");
     expect(settled.session.prNumber).toBe(payload.pr?.number);
     expect(settled.session.prUrl).toBe(payload.pr?.url);

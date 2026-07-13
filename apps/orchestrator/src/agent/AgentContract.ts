@@ -59,7 +59,48 @@ export const standingOrders = (args: {
     "If the repository defines quality gates (CLAUDE.md or similar), run them before committing.",
     "NEVER push, never create pull requests, never touch git remotes — Maestro publishes your commits with its own credentials after this turn.",
     "If the task requires no file changes (a pure question), just answer — do not create an empty commit.",
+    "If you committed changes, END your final message with a pull-request proposal in exactly this format (marker on its own line, then the title line, then a blank line, then the description):",
+    PR_BLOCK_MARKER,
+    "<one-line PR title>",
+    "",
+    "<PR description: what changed and why, in markdown>",
   ].join("\n");
+
+/**
+ * The agent proposes its own PR title/description as the trailing block of
+ * its final message (see standingOrders). Maestro consumes the block at
+ * publish time; everything before the marker stays the human-facing result.
+ */
+export const PR_BLOCK_MARKER = "---PR---";
+
+export interface PrProposal {
+  readonly title: string;
+  readonly body: string;
+}
+
+/**
+ * Splits a final message into human-facing text and the trailing PR proposal,
+ * if any. Tolerant: no marker, or a marker with nothing after it, yields no
+ * proposal and the text untouched. The LAST marker line wins (task text or
+ * quoted orders could contain one earlier).
+ */
+export const extractPrProposal = (
+  finalText: string,
+): { readonly text: string; readonly proposal: PrProposal | null } => {
+  const lines = finalText.split("\n");
+  const markerIndex = lines.findLastIndex((line) => line.trim() === PR_BLOCK_MARKER);
+  if (markerIndex === -1) return { text: finalText, proposal: null };
+  const after = lines.slice(markerIndex + 1);
+  const titleIndex = after.findIndex((line) => line.trim().length > 0);
+  if (titleIndex === -1) return { text: finalText, proposal: null };
+  const title = after[titleIndex]?.trim() ?? "";
+  const body = after
+    .slice(titleIndex + 1)
+    .join("\n")
+    .trim();
+  const text = lines.slice(0, markerIndex).join("\n").trimEnd();
+  return { text, proposal: { title, body } };
+};
 
 /** Parses one stream-json line into an event; Option.none for tolerated noise. */
 const parseLine = (line: string): Option.Option<AgentEvent> | "unknown" => {

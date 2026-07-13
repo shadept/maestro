@@ -1,5 +1,6 @@
 import type { DbError, ForgeError, GitError, Project, Session, TaskContext } from "@maestro/domain";
 import { Context, Effect, Layer } from "effect";
+import type { PrProposal } from "../agent/AgentContract.ts";
 import { AppConfig } from "../config/AppConfig.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
 import { GitHubForge } from "../forge/GitHubForge.ts";
@@ -23,21 +24,33 @@ export type PublishOutcome =
 /** What the locked git phase decided; the forge phase runs outside the lock. */
 type SyncResult = "nothing" | "up-to-date" | "synced";
 
-// PR title from the ticket ("FUR-42: Add a lint rule"); body links the ticket
-// by its identifier — Linear's GitHub integration turns the magic word into a
-// bidirectional link, and generic sources at least get a readable reference.
-const prTitle = (session: Session, context: TaskContext): string =>
-  context.title !== null && context.title.length > 0
-    ? `${session.ticketReference.externalId}: ${context.title}`
-    : session.ticketReference.externalId;
+// The agent proposes its own PR title/description (trailing block of its
+// final message, extracted by AgentContract); the ticket-derived fallback
+// covers proposal-less turns. Either way the body ends with a footer carrying
+// the ticket identifier — Linear's GitHub integration turns the magic word
+// into a bidirectional link, and generic sources get a readable reference.
+// The title is prefixed with the identifier unless the agent already did so.
+const prTitle = (session: Session, context: TaskContext, proposal: PrProposal | null): string => {
+  const id = session.ticketReference.externalId;
+  if (proposal !== null && proposal.title.length > 0) {
+    return proposal.title.toLowerCase().includes(id.toLowerCase())
+      ? proposal.title
+      : `${id}: ${proposal.title}`;
+  }
+  return context.title !== null && context.title.length > 0 ? `${id}: ${context.title}` : id;
+};
 
-const prBody = (session: Session): string =>
+const prFooter = (session: Session): string =>
   [
-    `Automated pull request opened by Maestro for ${session.ticketReference.externalId}.`,
-    "",
-    `Ticket: ${session.ticketReference.externalId}`,
-    `Maestro session: ${session.id}`,
+    "---",
+    `Ticket: ${session.ticketReference.externalId} · Maestro session: ${session.id}`,
+    "🤖 Opened by Maestro.",
   ].join("\n");
+
+const prBody = (session: Session, proposal: PrProposal | null): string =>
+  proposal !== null && proposal.body.length > 0
+    ? `${proposal.body}\n\n${prFooter(session)}`
+    : `Automated pull request opened by Maestro for ${session.ticketReference.externalId}.\n\n${prFooter(session)}`;
 
 /**
  * Outbound half of the git story (PRD §3.2): workers commit locally only; the
@@ -57,6 +70,8 @@ export class OutboundGit extends Context.Service<
       readonly session: Session;
       readonly project: Project;
       readonly context: TaskContext;
+      /** Agent-authored PR title/description, when its final message carried the block. */
+      readonly proposal?: PrProposal | null;
     }) => Effect.Effect<PublishOutcome, PublishError>;
   }
 >()("maestro/git/OutboundGit") {
@@ -90,8 +105,11 @@ export class OutboundGit extends Context.Service<
           readonly session: Session;
           readonly project: Project;
           readonly context: TaskContext;
+          /** Agent-authored PR title/description, when its final message carried the block. */
+          readonly proposal?: PrProposal | null;
         }) {
           const { session, project, context } = args;
+          const proposal = args.proposal ?? null;
           const gitDir = gitCache.cachePathFor(project);
           const branch = session.gitBranch;
           const credentials = forgeCredentials(config.githubToken);
@@ -136,9 +154,12 @@ export class OutboundGit extends Context.Service<
             repoGitUrl: project.repoGitUrl,
             headBranch: branch,
             baseBranch,
-            title: prTitle(session, context),
-            body: prBody(session),
-            draft: project.gitConventions.draftPr ?? true,
+            title: prTitle(session, context, proposal),
+            body: prBody(session, proposal),
+            // Non-draft by default since 2026-07-13 (operator decision): the
+            // agent's Result means "ready" — draftPr: true remains available
+            // as a per-project override for cautious repos.
+            draft: project.gitConventions.draftPr ?? false,
             existingNumber: session.prNumber,
           });
 

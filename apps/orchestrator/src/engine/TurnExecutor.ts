@@ -11,7 +11,7 @@ import type {
   TaskRunId,
 } from "@maestro/domain";
 import { Context, Effect, Fiber, Layer, Stream } from "effect";
-import { AgentContract, type AgentEvent } from "../agent/AgentContract.ts";
+import { AgentContract, type AgentEvent, extractPrProposal } from "../agent/AgentContract.ts";
 import { AppConfig } from "../config/AppConfig.ts";
 import { ProjectRepo } from "../db/ProjectRepo.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
@@ -249,6 +249,9 @@ export class TurnExecutor extends Context.Service<
 
         const cause = classifyOutcome(exit, result);
         if (cause === null && result !== null) {
+          // The agent's trailing ---PR--- block (standing orders) is plumbing
+          // for publish, not content: strip it from everything human-facing.
+          const { text: resultText, proposal } = extractPrProposal(result.finalText);
           // Outbound publish (FUR-15): push new commits + ensure the PR before
           // the run is recorded COMPLETED. DECISION: a publish failure after an
           // ok agent Result settles the turn FAILED (cause ERROR) with the
@@ -257,28 +260,30 @@ export class TurnExecutor extends Context.Service<
           // error (pg-boss failure record). The generic settlement in
           // `execute` re-fires on the propagated error but its FAILED→FAILED
           // transition is rejected, so this tailored settlement wins.
-          const published = yield* outboundGit.publish({ session, project, context }).pipe(
-            Effect.tapError((error) =>
-              settlement
-                .settleFailed({
-                  taskRunId: job.taskRunId,
-                  sessionId: job.sessionId,
-                  ticket: session.ticketReference,
-                  cause: "ERROR",
-                  summary: `agent succeeded but publishing failed: ${String(error)}`,
-                  pr: prOf(session),
-                  resultText: result.finalText,
-                })
-                .pipe(
-                  Effect.catch((settleError) =>
-                    Effect.logError(
-                      "TurnExecutor: publish-failure settlement incomplete",
-                      settleError,
+          const published = yield* outboundGit
+            .publish({ session, project, context, proposal })
+            .pipe(
+              Effect.tapError((error) =>
+                settlement
+                  .settleFailed({
+                    taskRunId: job.taskRunId,
+                    sessionId: job.sessionId,
+                    ticket: session.ticketReference,
+                    cause: "ERROR",
+                    summary: `agent succeeded but publishing failed: ${String(error)}`,
+                    pr: prOf(session),
+                    resultText,
+                  })
+                  .pipe(
+                    Effect.catch((settleError) =>
+                      Effect.logError(
+                        "TurnExecutor: publish-failure settlement incomplete",
+                        settleError,
+                      ),
                     ),
                   ),
-                ),
-            ),
-          );
+              ),
+            );
           // no-commit turns publish nothing; the callback still links a PR
           // opened by an earlier turn, if any
           const pr =
@@ -289,14 +294,17 @@ export class TurnExecutor extends Context.Service<
             taskRunId: job.taskRunId,
             sessionId: job.sessionId,
             ticket: session.ticketReference,
-            resultText: result.finalText,
+            resultText,
             pr,
           });
         } else {
           const failureCause = cause ?? "ERROR";
+          // Failed turns never publish, but their text may still end with the
+          // ---PR--- block — strip it from the human-facing summary too.
+          const failureText = result !== null ? extractPrProposal(result.finalText).text : null;
           const summary =
-            result !== null && result.finalText.length > 0
-              ? result.finalText
+            failureText !== null && failureText.length > 0
+              ? failureText
               : `worker exited with code ${exit.exitCode} (${failureCause})`;
           yield* settlement.settleFailed({
             taskRunId: job.taskRunId,
@@ -305,7 +313,7 @@ export class TurnExecutor extends Context.Service<
             cause: failureCause,
             summary,
             pr: prOf(session),
-            ...(result !== null && { resultText: result.finalText }),
+            ...(failureText !== null && { resultText: failureText }),
           });
         }
       });

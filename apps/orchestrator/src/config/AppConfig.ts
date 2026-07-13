@@ -40,7 +40,11 @@ const config = {
    * publishing fails per-invocation without it, nothing else does.
    */
   githubToken: Config.option(Config.redacted("MAESTRO_GITHUB_TOKEN")),
-  /** Commit identity defaults (PRD: distinct Maestro author). Config value only in M1. */
+  /**
+   * Commit identity for orchestrator-made commits (PRD: distinct Maestro
+   * author) — consumed by OutboundGit's diverged-branch reconciliation merge.
+   * Agent-made commits still carry claude-code's identity (M2 wiring).
+   */
   gitAuthorName: Config.nonEmptyString("MAESTRO_GIT_AUTHOR_NAME").pipe(
     Config.withDefault("Maestro"),
   ),

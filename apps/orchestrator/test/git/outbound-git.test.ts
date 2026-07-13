@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Project, Session, TaskContext } from "@maestro/domain";
+import { BranchDivergedError, type Project, type Session, type TaskContext } from "@maestro/domain";
 import { Effect, Layer, Option, Redacted } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -139,6 +139,18 @@ const commit = (worktree: string, file: string, message: string) => {
   appendFileSync(path.join(worktree, file), "work\n");
   git(worktree, "add", ".");
   git(worktree, "-c", "user.email=agent@test", "-c", "user.name=Agent", "commit", "-m", message);
+};
+
+/**
+ * Simulates a human touching the SESSION branch on the forge (e.g. GitHub's
+ * "Update branch" button): mutates the branch in a temporary origin worktree
+ * so origin's tip moves without the orchestrator's involvement.
+ */
+const humanUpdatesOriginBranch = (branch: string, mutate: (dir: string) => void) => {
+  const tmp = path.join(root, `human-${branch.replaceAll("/", "-")}-${Date.now()}`);
+  git(originDir, "worktree", "add", tmp, branch);
+  mutate(tmp);
+  git(originDir, "worktree", "remove", tmp);
 };
 
 describe("OutboundGit.publish", () => {
@@ -298,5 +310,110 @@ describe("OutboundGit.publish", () => {
       body: "",
     });
     expect(forgeCalls[callsBefore]?.args.title).toBe("FUR-206: self-titled");
+  });
+
+  it("diverged remote (update-branch merge commit) reconciles: merge, push, PR update", async () => {
+    const { project, session, paths } = await setupSession("FUR-207");
+    commit(paths.worktreePath, "work.txt", "turn one");
+    const first = await publish(session, project, taskContext("FUR-207", "Diverge me"));
+    expect(first._tag).toBe("Published");
+
+    // Human presses GitHub's "Update branch": main gains a commit, and the
+    // session branch gains a merge commit the orchestrator has never seen.
+    await writeFile(path.join(originDir, "upstream.txt"), "upstream change\n");
+    git(originDir, "add", ".");
+    git(originDir, "commit", "-m", "upstream work on main");
+    humanUpdatesOriginBranch(session.gitBranch, (dir) => {
+      git(dir, "merge", "main", "-m", `Merge branch 'main' into ${session.gitBranch}`);
+    });
+    const humanTip = git(originDir, "rev-parse", `refs/heads/${session.gitBranch}`);
+
+    // Meanwhile the agent committed again locally — histories have diverged.
+    commit(paths.worktreePath, "work.txt", "turn two");
+
+    const callsBefore = forgeCalls.length;
+    const afterFirst = await freshSession(session);
+    const outcome = await publish(afterFirst, project, taskContext("FUR-207", null));
+    expect(outcome._tag).toBe("Published");
+    if (outcome._tag !== "Published") return;
+    expect(outcome.prCreated).toBe(false);
+
+    // origin now carries the local tip, which is a Maestro-authored merge
+    // commit joining the agent's turn-two commit and the human's merge commit
+    const localTip = git(paths.worktreePath, "rev-parse", "HEAD");
+    expect(git(originDir, "rev-parse", `refs/heads/${session.gitBranch}`)).toBe(localTip);
+    expect(git(paths.worktreePath, "log", "-1", "--format=%an <%ae>")).toBe(
+      "Maestro <maestro@localhost>",
+    );
+    const parents = git(paths.worktreePath, "log", "-1", "--format=%P").split(" ");
+    expect(parents).toHaveLength(2);
+    expect(parents).toContain(humanTip);
+    // both sides' content survived the merge
+    expect(git(paths.worktreePath, "status", "--porcelain")).toBe("");
+    await expect(
+      readFile(path.join(paths.worktreePath, "upstream.txt"), "utf8"),
+    ).resolves.toContain("upstream change");
+
+    // PR updated as on any other push
+    expect(forgeCalls.length).toBe(callsBefore + 1);
+    expect(forgeCalls[callsBefore]?.op).toBe("update");
+  });
+
+  it("diverged remote with conflicts: merge aborted, worktree pristine, actionable error", async () => {
+    const { project, session, paths } = await setupSession("FUR-208");
+    commit(paths.worktreePath, "work.txt", "turn one");
+    const first = await publish(session, project, taskContext("FUR-208", "Conflict me"));
+    expect(first._tag).toBe("Published");
+
+    // Human edits the same line on the remote session branch...
+    humanUpdatesOriginBranch(session.gitBranch, (dir) => {
+      writeFileSync(path.join(dir, "work.txt"), "human version\n");
+      git(dir, "add", ".");
+      git(dir, "commit", "-m", "human hotfix on the PR branch");
+    });
+    const remoteTip = git(originDir, "rev-parse", `refs/heads/${session.gitBranch}`);
+
+    // ...while the agent rewrites it locally — the merge must conflict.
+    writeFileSync(path.join(paths.worktreePath, "work.txt"), "agent version\n");
+    git(paths.worktreePath, "add", ".");
+    git(
+      paths.worktreePath,
+      "-c",
+      "user.email=agent@test",
+      "-c",
+      "user.name=Agent",
+      "commit",
+      "-m",
+      "turn two",
+    );
+    const localTip = git(paths.worktreePath, "rev-parse", "HEAD");
+
+    const callsBefore = forgeCalls.length;
+    const afterFirst = await freshSession(session);
+    const error = await run(
+      Effect.gen(function* () {
+        const outbound = yield* OutboundGit;
+        return yield* outbound
+          .publish({ session: afterFirst, project, context: taskContext("FUR-208", null) })
+          .pipe(Effect.flip);
+      }),
+    );
+
+    // purposeful error: the String() rendering IS the turn-failed summary tail
+    expect(error).toBeInstanceOf(BranchDivergedError);
+    expect(String(error)).toContain("@maestro");
+    expect(String(error)).toContain(`origin/${session.gitBranch}`);
+    expect(String(error)).toContain("resolve the conflicts");
+
+    // merge aborted: worktree pristine on the local tip, no merge in progress
+    expect(git(paths.worktreePath, "rev-parse", "HEAD")).toBe(localTip);
+    expect(git(paths.worktreePath, "status", "--porcelain")).toBe("");
+    expect(() => git(paths.worktreePath, "rev-parse", "--verify", "MERGE_HEAD")).toThrow();
+
+    // remote untouched (never force-pushed), no forge traffic, PR record kept
+    expect(git(originDir, "rev-parse", `refs/heads/${session.gitBranch}`)).toBe(remoteTip);
+    expect(forgeCalls.length).toBe(callsBefore);
+    const after = await freshSession(session);
+    expect(after.prNumber).toBe(afterFirst.prNumber);
   });
 });

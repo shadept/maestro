@@ -37,7 +37,18 @@ export class GitCommandError extends Schema.TaggedErrorClass<GitCommandError>()(
   stderr: Schema.String,
 }) {}
 
-export type GitError = GitCommandError;
+/**
+ * A session branch diverged from its remote (e.g. a human pressed GitHub's
+ * "Update branch" on the PR) and the automatic reconciliation merge hit
+ * conflicts. `message` is operator-facing: it lands verbatim in the
+ * turn-failed ticket comment and tells the operator the actionable next step.
+ */
+export class BranchDivergedError extends Schema.TaggedErrorClass<BranchDivergedError>()(
+  "BranchDivergedError",
+  { branch: Schema.String, message: Schema.String },
+) {}
+
+export type GitError = GitCommandError | BranchDivergedError;
 
 // ── forge area ─────────────────────────────────────────────────────────────
 

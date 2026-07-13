@@ -1,9 +1,18 @@
-import type { DbError, ForgeError, GitError, Project, Session, TaskContext } from "@maestro/domain";
+import {
+  BranchDivergedError,
+  type DbError,
+  type ForgeError,
+  type GitError,
+  type Project,
+  type Session,
+  type TaskContext,
+} from "@maestro/domain";
 import { Context, Effect, Layer } from "effect";
 import type { PrProposal } from "../agent/AgentContract.ts";
 import { AppConfig } from "../config/AppConfig.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
 import { GitHubForge } from "../forge/GitHubForge.ts";
+import { worktreeDir } from "../storage/paths.ts";
 import { GitCache } from "./GitCache.ts";
 import { forgeCredentials, type GitCommandOptions, runGit } from "./git-command.ts";
 import { RepoLocks } from "./RepoLocks.ts";
@@ -21,7 +30,13 @@ export type PublishOutcome =
       readonly prCreated: boolean;
     };
 
-/** What the locked git phase decided; the forge phase runs outside the lock. */
+/**
+ * What the locked git phase decided; the forge phase runs outside the lock.
+ * The fourth classification — remote exists but DIVERGED from the local tip
+ * (e.g. GitHub's "Update branch" added a merge commit) — never leaves the
+ * locked phase: a clean reconciliation merge collapses it into "synced", a
+ * conflicted one fails the phase with BranchDivergedError.
+ */
 type SyncResult = "nothing" | "up-to-date" | "synced";
 
 // The agent proposes its own PR title/description (trailing block of its
@@ -65,6 +80,9 @@ export class OutboundGit extends Context.Service<
      * Detects new commits on the session branch; if any, pushes the branch to
      * origin and creates (first push, draft) or updates the session's PR.
      * No-commit turns return NothingToPublish without touching the remote.
+     * A remote branch that diverged (a human updated the PR branch) is
+     * reconciled by merging it into the local branch first — never a force
+     * push; a conflicted merge is aborted and fails with BranchDivergedError.
      */
     readonly publish: (args: {
       readonly session: Session;
@@ -99,6 +117,85 @@ export class OutboundGit extends Context.Service<
             out.length === 0 ? null : (out.split(/\s+/)[0] ?? null),
           ),
         );
+
+      const isAncestor = (cwd: string, ancestor: string, descendant: string) =>
+        runGit(["merge-base", "--is-ancestor", ancestor, descendant], { cwd }).pipe(
+          Effect.as(true),
+          // exit 1 = not an ancestor; anything else is a real failure
+          Effect.catch((error) =>
+            error.exitCode === 1 ? Effect.succeed(false) : Effect.fail(error),
+          ),
+        );
+
+      /**
+       * The remote session branch moved without us (a human pressed GitHub's
+       * "Update branch", or pushed to the PR branch) — the deliberately
+       * non-forced push would be rejected as non-fast-forward. Reconcile by
+       * merging the remote tip INTO the local branch in the session worktree
+       * (the remote history is never rewritten, never force-pushed). Runs
+       * inside the caller's repo lock: the fetch writes refs/remotes in the
+       * bare repo and the merge moves refs/heads/<branch> + the worktree.
+       */
+      const reconcileDiverged = Effect.fn("OutboundGit.reconcileDiverged")(function* (args: {
+        readonly session: Session;
+        readonly gitDir: string;
+        readonly remoteOptions: GitCommandOptions;
+      }) {
+        const branch = args.session.gitBranch;
+        // NEVER fetch into refs/heads/<branch>: the branch is checked out in
+        // the session worktree, so git refuses. refs/remotes is safe in the
+        // bare repo and gives the merge a stable name (FETCH_HEAD would land
+        // in the bare repo's gitdir, not the worktree's). `--refmap=` is
+        // load-bearing: without it the clone's mirror fetch refspec
+        // (+refs/heads/*:refs/heads/*) opportunistically maps the fetched
+        // branch back onto its checked-out head — the same refusal.
+        const remoteRef = `refs/remotes/origin/${branch}`;
+        yield* runGit(
+          ["fetch", "--refmap=", "origin", `+refs/heads/${branch}:${remoteRef}`],
+          args.remoteOptions,
+        );
+        if (yield* isAncestor(args.gitDir, remoteRef, `refs/heads/${branch}`)) {
+          return; // race: the "divergence" was history we already have — plain push suffices
+        }
+        const worktreePath = worktreeDir(config.storageRoot, args.session.id);
+        yield* runGit(
+          [
+            // First consumer of the configured Maestro commit identity: the
+            // merge commit is orchestrator-made, not agent-made.
+            "-c",
+            `user.name=${config.gitAuthorName}`,
+            "-c",
+            `user.email=${config.gitAuthorEmail}`,
+            "merge",
+            "--no-edit",
+            "-m",
+            `Merge remote-tracking branch 'origin/${branch}' into ${branch}`,
+            remoteRef,
+          ],
+          { cwd: worktreePath },
+        ).pipe(
+          Effect.catch((mergeError) =>
+            // Leave the worktree pristine on the local tip; a half-merged
+            // worktree would poison the next agent turn. Abort is best-effort:
+            // some merge failures (dirty worktree) never start a merge.
+            runGit(["merge", "--abort"], { cwd: worktreePath }).pipe(
+              Effect.ignore,
+              Effect.andThen(
+                Effect.fail(
+                  new BranchDivergedError({
+                    branch,
+                    message:
+                      `session branch '${branch}' has diverged from origin (someone updated the PR branch) ` +
+                      `and the automatic merge hit conflicts (${mergeError.stderr.trim() || mergeError.command}). ` +
+                      `To resolve: comment on the ticket mentioning @${config.linearMentionHandle} and ask it to ` +
+                      `merge origin/${branch} into the session branch and resolve the conflicts.`,
+                  }),
+                ),
+              ),
+            ),
+          ),
+        );
+      });
 
       return {
         publish: Effect.fn("OutboundGit.publish")(function* (args: {
@@ -137,6 +234,23 @@ export class OutboundGit extends Context.Service<
               } else if (remote === local) {
                 // remote current; only proceed to heal a lost PR record
                 return session.prNumber === null ? ("synced" as const) : ("up-to-date" as const);
+              } else {
+                // Remote at a different tip. The common case — the remote tip
+                // is the previous turn's push, i.e. already in local history —
+                // needs no reconciliation (the push below fast-forwards) and
+                // is decided locally: we pushed that sha, so we have it. Any
+                // other shape is divergence, the fourth sync state.
+                const remoteKnown = yield* runGit(["cat-file", "-e", `${remote}^{commit}`], {
+                  cwd: gitDir,
+                }).pipe(
+                  Effect.as(true),
+                  Effect.catch(() => Effect.succeed(false)),
+                );
+                const fastForward =
+                  remoteKnown && (yield* isAncestor(gitDir, remote, `refs/heads/${branch}`));
+                if (!fastForward) {
+                  yield* reconcileDiverged({ session, gitDir, remoteOptions });
+                }
               }
               yield* runGit(
                 ["push", "origin", `refs/heads/${branch}:refs/heads/${branch}`],

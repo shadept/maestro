@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import type { AgentEffort } from "@maestro/domain";
 import { Config, Context, Layer, Option, Redacted } from "effect";
 
 // Every env var the orchestrator understands, validated at boot. Values are
@@ -67,6 +68,15 @@ const config = {
   agentOauthToken: Config.option(Config.redacted("CLAUDE_CODE_OAUTH_TOKEN")),
   /** API key fallback for agent auth. */
   agentApiKey: Config.option(Config.redacted("ANTHROPIC_API_KEY")),
+  /**
+   * Deployment-default agent model/effort (FUR-41), the least specific of the
+   * three override levels (task > project > deployment). Absent = the claude
+   * CLI's own default, exactly the pre-FUR-41 behavior.
+   */
+  agentModel: Config.option(Config.nonEmptyString("MAESTRO_AGENT_MODEL")),
+  agentEffort: Config.option(
+    Config.literals(["low", "medium", "high", "xhigh", "max"], "MAESTRO_AGENT_EFFORT"),
+  ),
   logFormat: Config.literals(["json", "pretty"], "MAESTRO_LOG_FORMAT").pipe(
     Config.withDefault("json" as const),
   ),
@@ -99,6 +109,8 @@ export class AppConfig extends Context.Service<
     readonly linearBotUserId: Option.Option<string>;
     readonly agentOauthToken: Option.Option<Redacted.Redacted>;
     readonly agentApiKey: Option.Option<Redacted.Redacted>;
+    readonly agentModel: Option.Option<string>;
+    readonly agentEffort: Option.Option<AgentEffort>;
     readonly logFormat: "json" | "pretty";
     readonly port: number;
     readonly adminUiDist: string;
@@ -128,6 +140,8 @@ export class AppConfig extends Context.Service<
       linearBotUserId: Option.none(),
       agentOauthToken: Option.none(),
       agentApiKey: Option.none(),
+      agentModel: Option.none(),
+      agentEffort: Option.none(),
       logFormat: "pretty",
       port: 0,
       adminUiDist: "/tmp/maestro-test/admin-ui-dist",

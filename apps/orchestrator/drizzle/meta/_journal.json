@@ -43,6 +43,13 @@
       "when": 1783883514041,
       "tag": "0005_lazy_william_stryker",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783887502966,
+      "tag": "0006_late_dexter_bennett",
+      "breakpoints": true
     }
   ]
 }

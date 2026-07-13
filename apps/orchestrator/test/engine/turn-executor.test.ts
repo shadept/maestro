@@ -11,11 +11,17 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { ForgeApiError, type TaskContext, type TaskRun, type TaskRunState } from "@maestro/domain";
+import {
+  type AgentOverrides,
+  ForgeApiError,
+  type TaskContext,
+  type TaskRun,
+  type TaskRunState,
+} from "@maestro/domain";
 import { Effect, Layer, Option, PubSub, Redacted, type Scope } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { AgentContract } from "../../src/agent/AgentContract.ts";
+import { AgentContract, standingOrders } from "../../src/agent/AgentContract.ts";
 import { AppConfig } from "../../src/config/AppConfig.ts";
 import { AuditRepo } from "../../src/db/AuditRepo.ts";
 import { Db } from "../../src/db/Db.ts";
@@ -151,17 +157,19 @@ const taskContext = (ticketKey: string, body: string): TaskContext => ({
   actor: "shade",
   title: `Ticket ${ticketKey}`,
   body,
+  agentModel: null,
+  agentEffort: null,
   deliveryId: `d-${ticketKey}`,
   payload: {},
 });
 
 /** Creates project + session + PENDING TaskRun carrying the given body. */
-const setupTurn = (ticketKey: string, body: string) =>
+const setupTurn = (ticketKey: string, body: string, agent: AgentOverrides = {}) =>
   Effect.gen(function* () {
     const projectRepo = yield* ProjectRepo;
     const sessionRepo = yield* SessionRepo;
     const taskRunRepo = yield* TaskRunRepo;
-    const project = yield* projectRepo.create({ repoGitUrl: `file://${originDir}` });
+    const project = yield* projectRepo.create({ repoGitUrl: `file://${originDir}`, agent });
     const session = yield* sessionRepo.create({
       projectId: project.id,
       ticketReference: { source: "linear", externalId: ticketKey },
@@ -376,6 +384,81 @@ describe("TurnExecutor", () => {
     expect(forgeCalls.some((c) => c.args.headBranch === session.gitBranch)).toBe(false);
     expect(settled.session.prNumber).toBeNull();
     expect(settled.session.prUrl).toBeNull();
+  });
+
+  it("project-level agent override reaches the worker command; the first turn pins it (FUR-41)", async () => {
+    const { session, taskRun } = await run(
+      setupTurn("FUR-108", "MODE=ARGS", { model: "claude-sonnet-4-5", effort: "low" }),
+    );
+
+    await run(
+      Effect.gen(function* () {
+        const executor = yield* TurnExecutor;
+        yield* executor.execute({ taskRunId: taskRun.id, sessionId: session.id });
+      }),
+    );
+
+    // the fake agent recorded its exact argv (one arg per line) in the worktree
+    const argvFile = await readFile(
+      path.join(worktreeDir(storageRoot, session.id), "agent-argv.txt"),
+      "utf8",
+    );
+    expect(argvFile).toContain("--model\nclaude-sonnet-4-5\n--effort\nlow");
+
+    const settled = await run(
+      Effect.gen(function* () {
+        const taskRunRepo = yield* TaskRunRepo;
+        const sessionRepo = yield* SessionRepo;
+        return {
+          taskRun: yield* taskRunRepo.get(taskRun.id),
+          session: yield* sessionRepo.get(session.id),
+        };
+      }),
+    );
+    expect(settled.taskRun.state).toBe("COMPLETED");
+    // the first turn pinned its resolution — resume turns will keep it
+    expect(settled.session.agentModel).toBe("claude-sonnet-4-5");
+    expect(settled.session.agentEffort).toBe("low");
+  });
+
+  it("absent agent config: worker argv is byte-for-byte today's command (FUR-41)", async () => {
+    const { session, taskRun } = await run(setupTurn("FUR-109", "MODE=ARGS"));
+
+    await run(
+      Effect.gen(function* () {
+        const executor = yield* TurnExecutor;
+        yield* executor.execute({ taskRunId: taskRun.id, sessionId: session.id });
+      }),
+    );
+
+    const argvFile = await readFile(
+      path.join(worktreeDir(storageRoot, session.id), "agent-argv.txt"),
+      "utf8",
+    );
+    const prompt = `Ticket FUR-109\n\nMODE=ARGS\n\n${standingOrders({
+      branchName: session.gitBranch,
+      ticketId: "FUR-109",
+    })}`;
+    expect(argvFile).toBe(
+      `${[
+        "-p",
+        prompt,
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--dangerously-skip-permissions",
+      ].join("\n")}\n`,
+    );
+
+    // nothing resolved, nothing pinned
+    const after = await run(
+      Effect.gen(function* () {
+        const sessionRepo = yield* SessionRepo;
+        return yield* sessionRepo.get(session.id);
+      }),
+    );
+    expect(after.agentModel).toBeNull();
+    expect(after.agentEffort).toBeNull();
   });
 
   it("publish failure after agent success: FAILED with cause ERROR, summary in outbox", async () => {

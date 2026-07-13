@@ -1,4 +1,5 @@
 import {
+  type AgentOverrides,
   type DbError,
   EntityNotFoundError,
   type GitConventionOverrides,
@@ -20,6 +21,7 @@ export interface ProjectCreate {
   readonly linearTeamKey?: string;
   readonly gitConventions?: GitConventionOverrides;
   readonly resources?: ResourceTiers;
+  readonly agent?: AgentOverrides;
 }
 
 export class ProjectRepo extends Context.Service<
@@ -47,6 +49,7 @@ export class ProjectRepo extends Context.Service<
                 linearTeamKey: input.linearTeamKey ?? null,
                 gitConventions: input.gitConventions ?? {},
                 resources: input.resources ?? {},
+                agent: input.agent ?? {},
               })
               .returning(),
           );

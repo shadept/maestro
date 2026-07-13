@@ -60,6 +60,8 @@ describe("schema", () => {
           actor: "shade",
           title: "A ticket",
           body: "Do the thing.",
+          agentModel: null,
+          agentEffort: null,
           deliveryId: "d-7",
           payload: {},
         },

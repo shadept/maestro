@@ -1,4 +1,4 @@
-import type { SessionState, TaskSource } from "@maestro/domain";
+import type { AgentEffort, SessionState, TaskSource } from "@maestro/domain";
 import { index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { uuidV7PrimaryKey } from "./columns.ts";
 import { projects } from "./projects.ts";
@@ -17,6 +17,10 @@ export const sessions = pgTable(
     prNumber: integer("pr_number"),
     prUrl: text("pr_url"),
     state: text("state").$type<SessionState>().notNull(),
+    // The model/effort pinned by the session's first turn (FUR-41) — resume
+    // turns keep it unless a task-level override says otherwise.
+    agentModel: text("agent_model"),
+    agentEffort: text("agent_effort").$type<AgentEffort>(),
     terminationRequestedAt: timestamp("termination_requested_at", { withTimezone: true }),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

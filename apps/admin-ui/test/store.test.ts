@@ -29,6 +29,8 @@ const session = (overrides: Record<string, unknown> = {}): Session =>
     prUrl: null,
     terminationRequestedAt: null,
     pausedAt: null,
+    agentModel: null,
+    agentEffort: null,
     state: "WARM_IDLE",
     createdAt: new Date("2026-07-12T10:00:00Z"),
     lastActivityAt: new Date("2026-07-12T10:00:00Z"),

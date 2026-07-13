@@ -1,5 +1,6 @@
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import {
+  AgentEffort,
   type DbError,
   type GitError,
   IngestMappingError,
@@ -96,6 +97,53 @@ const signatureMatches = (rawBody: string, signature: string, secret: Redacted.R
 
 const hasKey = (value: unknown, key: string): boolean =>
   typeof value === "object" && value !== null && key in value;
+
+// ── task-level agent overrides via labels (FUR-41) ──────────────────────────
+// Convention: `maestro:model=<id>` / `maestro:effort=<level>` labels on the
+// issue. Only issue (label) events carry labels — Linear comment webhooks do
+// not — so task-level overrides can only arrive on label-triggered turns;
+// the session pin (TurnExecutor) carries the choice across comment turns.
+
+const MODEL_LABEL_PREFIX = "maestro:model=";
+const EFFORT_LABEL_PREFIX = "maestro:effort=";
+
+const isAgentEffort = Schema.is(AgentEffort);
+
+export interface AgentOverrideLabels {
+  readonly model: string | null;
+  readonly effort: AgentEffort | null;
+  /** Override-shaped labels that carried an unusable value — callers log these. */
+  readonly invalid: ReadonlyArray<string>;
+}
+
+/**
+ * Last matching label wins (Linear gives no ordering guarantee, but duplicate
+ * override labels on one issue are operator error anyway). Model values are
+ * passed through untouched — the claude CLI validates ids and an invalid one
+ * fails the turn loudly. Effort values must be a level the CLI accepts;
+ * anything else is reported as invalid and ignored, never a failed delivery.
+ */
+export const parseAgentOverrideLabels = (
+  labels: ReadonlyArray<{ readonly name: string }>,
+): AgentOverrideLabels => {
+  let model: string | null = null;
+  let effort: AgentEffort | null = null;
+  const invalid: string[] = [];
+  for (const label of labels) {
+    const name = label.name.trim();
+    const lower = name.toLowerCase();
+    if (lower.startsWith(MODEL_LABEL_PREFIX)) {
+      const value = name.slice(MODEL_LABEL_PREFIX.length).trim();
+      if (value.length > 0) model = value;
+      else invalid.push(label.name);
+    } else if (lower.startsWith(EFFORT_LABEL_PREFIX)) {
+      const value = lower.slice(EFFORT_LABEL_PREFIX.length).trim();
+      if (isAgentEffort(value)) effort = value;
+      else invalid.push(label.name);
+    }
+  }
+  return { model, effort, invalid };
+};
 
 export interface LinearDelivery {
   /** The exact request body bytes — the HMAC input. Parsed only after verification. */
@@ -215,12 +263,21 @@ export class LinearIngest extends Context.Service<
               reason: `no project registered for Linear team ${teamKey}`,
             } satisfies IngestOutcome;
           }
+          const overrides = parseAgentOverrideLabels(issue.labels ?? []);
+          if (overrides.invalid.length > 0) {
+            yield* Effect.logWarning("LinearIngest: ignoring invalid agent-override labels", {
+              ticket: issue.identifier,
+              labels: overrides.invalid,
+            });
+          }
           const context: TaskContext = {
             source: "linear",
             ticket,
             actor,
             title: issue.title,
             body: issue.description ?? "",
+            agentModel: overrides.model,
+            agentEffort: overrides.effort,
             deliveryId,
             payload,
           };
@@ -296,6 +353,10 @@ export class LinearIngest extends Context.Service<
             actor: comment.user?.name ?? envelope.actor?.name ?? "linear",
             title: null,
             body: comment.body,
+            // comment payloads carry no labels — task-level agent overrides
+            // can only ride label events (see parseAgentOverrideLabels)
+            agentModel: null,
+            agentEffort: null,
             deliveryId,
             payload,
           };

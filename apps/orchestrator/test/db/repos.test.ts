@@ -60,6 +60,8 @@ const taskContext = (session: Session): TaskContext => ({
   actor: "shade",
   title: "A ticket",
   body: "Do the thing.",
+  agentModel: null,
+  agentEffort: null,
   deliveryId: `d-${session.id}`,
   payload: {},
 });

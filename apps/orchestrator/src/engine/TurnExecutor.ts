@@ -201,7 +201,26 @@ export class TurnExecutor extends Context.Service<
         const configDir = sessionConfigDir(config.storageRoot, session.id);
         yield* Effect.promise(() => mkdir(configDir, { recursive: true }));
 
-        const command = agent.buildCommand({ session, context, configDir });
+        const command = agent.buildCommand({ session, context, project, configDir });
+        // FUR-41: the first turn pins its resolved model/effort on the session
+        // so resume turns keep them regardless of later config/project edits.
+        // A session that pinned nothing (CLI default) follows config changes —
+        // there is nothing recorded to keep. Resume turns resolving a
+        // different model than the pin (task-level override, or a config
+        // change on an unpinned session) are deliberate-but-noteworthy:
+        // `--resume` with a different model switches the claude session's
+        // model mid-conversation, so it is logged loudly.
+        if (session.claudeSessionUuid === null) {
+          if (command.resolved.model !== null || command.resolved.effort !== null) {
+            yield* sessionRepo.setAgentSettings(session.id, command.resolved);
+          }
+        } else if (command.resolved.model !== session.agentModel) {
+          yield* Effect.logWarning("TurnExecutor: resume turn switches the session's model", {
+            sessionId: session.id,
+            pinnedModel: session.agentModel,
+            resolvedModel: command.resolved.model,
+          });
+        }
         const timeoutMillis = config.turnTimeoutSeconds * 1000;
         yield* taskRunRepo.transition(job.taskRunId, "EXECUTING", {
           expiresAt: new Date(Date.now() + timeoutMillis),

@@ -82,6 +82,8 @@ const taskContext = (ticketKey: string, title: string | null): TaskContext => ({
   actor: "shade",
   title,
   body: "please",
+  agentModel: null,
+  agentEffort: null,
   deliveryId: `d-${ticketKey}-${Math.random()}`,
   payload: {},
 });

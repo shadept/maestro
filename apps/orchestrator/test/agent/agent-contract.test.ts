@@ -1,6 +1,13 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { Session, type SessionId, TaskContext } from "@maestro/domain";
+import {
+  type AgentEffort,
+  type AgentOverrides,
+  Project,
+  Session,
+  type SessionId,
+  TaskContext,
+} from "@maestro/domain";
 import { Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -9,12 +16,16 @@ import { AppConfig } from "../../src/config/AppConfig.ts";
 import { SessionRepo } from "../../src/db/SessionRepo.ts";
 
 const decodeSession = Schema.decodeUnknownSync(Session);
+const decodeProject = Schema.decodeUnknownSync(Project);
 const decodeContext = Schema.decodeUnknownSync(TaskContext);
 
 const uuid = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
 const CLAUDE_UUID = "89180ca9-fe2e-4631-bc86-dc0a7de6d9d7";
 
-const makeSession = (claudeSessionUuid: string | null): Session =>
+const makeSession = (
+  claudeSessionUuid: string | null,
+  pinned: { model?: string; effort?: AgentEffort } = {},
+): Session =>
   decodeSession({
     id: uuid(1),
     projectId: uuid(2),
@@ -25,30 +36,50 @@ const makeSession = (claudeSessionUuid: string | null): Session =>
     prUrl: null,
     terminationRequestedAt: null,
     pausedAt: null,
+    agentModel: pinned.model ?? null,
+    agentEffort: pinned.effort ?? null,
     state: "WARM_IDLE",
     createdAt: new Date(),
     lastActivityAt: new Date(),
   });
 
-const firstTurnContext = decodeContext({
-  source: "linear",
-  ticket: { source: "linear", externalId: "FUR-12" },
-  actor: "shade",
-  title: "Add a lint rule",
-  body: "Please add the no-console lint rule to the repo.",
-  deliveryId: "d-1",
-  payload: {},
-});
+const makeProject = (agent: AgentOverrides = {}): Project =>
+  decodeProject({
+    id: uuid(2),
+    repoGitUrl: "https://github.com/acme/flux.git",
+    linearTeamKey: "FUR",
+    localCachePath: null,
+    gitConventions: {},
+    resources: {},
+    agent,
+    createdAt: new Date(),
+  });
 
-const followupContext = decodeContext({
-  source: "linear",
-  ticket: { source: "linear", externalId: "FUR-12" },
-  actor: "shade",
-  title: null,
-  body: "Also apply it to the test files, please.",
-  deliveryId: "d-2",
-  payload: {},
-});
+const makeContext = (
+  overrides: { model?: string; effort?: AgentEffort } = {},
+  base: { title: string | null; body: string } = {
+    title: "Add a lint rule",
+    body: "Please add the no-console lint rule to the repo.",
+  },
+): TaskContext =>
+  decodeContext({
+    source: "linear",
+    ticket: { source: "linear", externalId: "FUR-12" },
+    actor: "shade",
+    title: base.title,
+    body: base.body,
+    agentModel: overrides.model ?? null,
+    agentEffort: overrides.effort ?? null,
+    deliveryId: "d-1",
+    payload: {},
+  });
+
+const firstTurnContext = makeContext();
+
+const followupContext = makeContext(
+  {},
+  { title: null, body: "Also apply it to the test files, please." },
+);
 
 // The orders every prompt must end with, for the test sessions above.
 const STANDING_ORDERS = standingOrders({ branchName: "maestro/FUR-12", ticketId: "FUR-12" });
@@ -107,6 +138,7 @@ describe("AgentContract.buildCommand", () => {
         return agent.buildCommand({
           session: makeSession(null),
           context: firstTurnContext,
+          project: makeProject(),
           configDir: "/session-config",
         });
       }),
@@ -135,6 +167,7 @@ describe("AgentContract.buildCommand", () => {
         return agent.buildCommand({
           session: makeSession(CLAUDE_UUID),
           context: followupContext,
+          project: makeProject(),
           configDir: "/session-config",
         });
       }),
@@ -157,6 +190,7 @@ describe("AgentContract.buildCommand", () => {
         return agent.buildCommand({
           session: makeSession(null),
           context: followupContext,
+          project: makeProject(),
           configDir: "/cfg",
         });
       }),
@@ -174,11 +208,13 @@ describe("AgentContract.buildCommand", () => {
           agent.buildCommand({
             session: makeSession(null),
             context: firstTurnContext,
+            project: makeProject(),
             configDir: "/cfg",
           }),
           agent.buildCommand({
             session: makeSession(CLAUDE_UUID),
             context: followupContext,
+            project: makeProject(),
             configDir: "/cfg",
           }),
         ];
@@ -196,6 +232,135 @@ describe("AgentContract.buildCommand", () => {
     expect(STANDING_ORDERS).toContain("NEVER push");
     expect(STANDING_ORDERS).toContain("do not create an empty commit");
     expect(STANDING_ORDERS).toContain("quality gates");
+  });
+});
+
+describe("AgentContract.buildCommand model/effort precedence (FUR-41)", () => {
+  // Runs buildCommand with the given levels populated and returns the command.
+  const build = async (args: {
+    readonly config?: { model?: string; effort?: AgentEffort };
+    readonly project?: AgentOverrides;
+    readonly session?: { claudeSessionUuid?: string; model?: string; effort?: AgentEffort };
+    readonly task?: { model?: string; effort?: AgentEffort };
+  }) => {
+    const { layer } = makeLayer({
+      ...(args.config?.model !== undefined && { agentModel: Option.some(args.config.model) }),
+      ...(args.config?.effort !== undefined && { agentEffort: Option.some(args.config.effort) }),
+    });
+    return run(
+      Effect.gen(function* () {
+        const agent = yield* AgentContract;
+        return agent.buildCommand({
+          session: makeSession(args.session?.claudeSessionUuid ?? null, args.session ?? {}),
+          context: makeContext(args.task ?? {}),
+          project: makeProject(args.project ?? {}),
+          configDir: "/cfg",
+        });
+      }),
+      layer,
+    );
+  };
+
+  const flagValue = (argv: ReadonlyArray<string>, flag: string): string | undefined => {
+    const index = argv.indexOf(flag);
+    return index === -1 ? undefined : argv[index + 1];
+  };
+
+  it("nothing configured anywhere: argv is byte-for-byte the pre-FUR-41 command", async () => {
+    const command = await build({});
+    expect(command.argv).toEqual([
+      "claude",
+      "-p",
+      `Add a lint rule\n\nPlease add the no-console lint rule to the repo.\n\n${STANDING_ORDERS}`,
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--dangerously-skip-permissions",
+    ]);
+    expect(command.resolved).toEqual({ model: null, effort: null });
+  });
+
+  it("deployment level alone applies", async () => {
+    const command = await build({ config: { model: "claude-haiku-4-5", effort: "low" } });
+    expect(flagValue(command.argv, "--model")).toBe("claude-haiku-4-5");
+    expect(flagValue(command.argv, "--effort")).toBe("low");
+    expect(command.resolved).toEqual({ model: "claude-haiku-4-5", effort: "low" });
+  });
+
+  it("project level beats deployment", async () => {
+    const command = await build({
+      config: { model: "claude-haiku-4-5", effort: "low" },
+      project: { model: "claude-sonnet-4-5", effort: "medium" },
+    });
+    expect(flagValue(command.argv, "--model")).toBe("claude-sonnet-4-5");
+    expect(flagValue(command.argv, "--effort")).toBe("medium");
+  });
+
+  it("task level beats project and deployment", async () => {
+    const command = await build({
+      config: { model: "claude-haiku-4-5", effort: "low" },
+      project: { model: "claude-sonnet-4-5", effort: "medium" },
+      task: { model: "claude-opus-4-6", effort: "max" },
+    });
+    expect(flagValue(command.argv, "--model")).toBe("claude-opus-4-6");
+    expect(flagValue(command.argv, "--effort")).toBe("max");
+  });
+
+  it("task level beats deployment with no project override in between", async () => {
+    const command = await build({
+      config: { model: "claude-haiku-4-5" },
+      task: { model: "claude-opus-4-6" },
+    });
+    expect(flagValue(command.argv, "--model")).toBe("claude-opus-4-6");
+  });
+
+  it("model and effort resolve independently across levels", async () => {
+    const command = await build({
+      config: { effort: "low" },
+      project: { model: "claude-sonnet-4-5" },
+    });
+    expect(flagValue(command.argv, "--model")).toBe("claude-sonnet-4-5");
+    expect(flagValue(command.argv, "--effort")).toBe("low");
+  });
+
+  it("only one side configured: only that flag appears", async () => {
+    const modelOnly = await build({ project: { model: "claude-sonnet-4-5" } });
+    expect(flagValue(modelOnly.argv, "--model")).toBe("claude-sonnet-4-5");
+    expect(modelOnly.argv).not.toContain("--effort");
+    const effortOnly = await build({ project: { effort: "xhigh" } });
+    expect(effortOnly.argv).not.toContain("--model");
+    expect(flagValue(effortOnly.argv, "--effort")).toBe("xhigh");
+  });
+
+  it("resume turn keeps the session's pinned settings over project/deployment changes", async () => {
+    const command = await build({
+      config: { model: "claude-haiku-4-5", effort: "low" },
+      project: { model: "claude-sonnet-4-5", effort: "medium" },
+      session: { claudeSessionUuid: CLAUDE_UUID, model: "claude-opus-4-6", effort: "high" },
+    });
+    expect(flagValue(command.argv, "--model")).toBe("claude-opus-4-6");
+    expect(flagValue(command.argv, "--effort")).toBe("high");
+    expect(flagValue(command.argv, "--resume")).toBe(CLAUDE_UUID);
+  });
+
+  it("a task-level override deliberately beats the session pin on a resume turn", async () => {
+    const command = await build({
+      session: { claudeSessionUuid: CLAUDE_UUID, model: "claude-opus-4-6", effort: "high" },
+      task: { model: "claude-haiku-4-5", effort: "low" },
+    });
+    expect(flagValue(command.argv, "--model")).toBe("claude-haiku-4-5");
+    expect(flagValue(command.argv, "--effort")).toBe("low");
+  });
+
+  it("flags precede --resume so the resumed session picks them up", async () => {
+    const command = await build({
+      project: { model: "claude-sonnet-4-5" },
+      session: { claudeSessionUuid: CLAUDE_UUID },
+    });
+    const model = command.argv.indexOf("--model");
+    const resume = command.argv.indexOf("--resume");
+    expect(model).toBeGreaterThan(-1);
+    expect(resume).toBeGreaterThan(model);
   });
 });
 

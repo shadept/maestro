@@ -29,6 +29,7 @@ describe("Project", () => {
     localCachePath: null,
     gitConventions: { branchPattern: "maestro/{ticketKey}", draftPr: true },
     resources: { memoryBaselineMib: 2048 },
+    agent: { model: "claude-sonnet-4-5", effort: "low" },
     createdAt: new Date("2026-07-12T00:00:00Z"),
   };
 
@@ -39,7 +40,14 @@ describe("Project", () => {
   });
 
   it("accepts empty override structs", () => {
-    roundTrip(Project, { ...valid, gitConventions: {}, resources: {} });
+    roundTrip(Project, { ...valid, gitConventions: {}, resources: {}, agent: {} });
+  });
+
+  it("rejects an unknown agent effort level and an empty model (FUR-41)", () => {
+    expect(() =>
+      Schema.decodeUnknownSync(Project)({ ...valid, agent: { effort: "turbo" } }),
+    ).toThrow();
+    expect(() => Schema.decodeUnknownSync(Project)({ ...valid, agent: { model: "" } })).toThrow();
   });
 
   it("rejects a non-uuid id", () => {
@@ -67,6 +75,8 @@ describe("Session", () => {
     prUrl: null,
     terminationRequestedAt: null,
     pausedAt: null,
+    agentModel: null,
+    agentEffort: null,
     state: "WARM_IDLE",
     createdAt: new Date("2026-07-12T00:00:00Z"),
     lastActivityAt: new Date("2026-07-12T01:00:00Z"),
@@ -93,6 +103,17 @@ describe("Session", () => {
   it("accepts a persisted circuit-breaker pause marker (FUR-39)", () => {
     const paused = roundTrip(Session, { ...valid, pausedAt: new Date("2026-07-12T03:00:00Z") });
     expect(paused.pausedAt).toEqual(new Date("2026-07-12T03:00:00Z"));
+  });
+
+  it("accepts pinned agent settings and rejects an unknown effort (FUR-41)", () => {
+    const pinned = roundTrip(Session, {
+      ...valid,
+      agentModel: "claude-opus-4-6",
+      agentEffort: "max",
+    });
+    expect(pinned.agentModel).toBe("claude-opus-4-6");
+    expect(pinned.agentEffort).toBe("max");
+    expect(() => Schema.decodeUnknownSync(Session)({ ...valid, agentEffort: "turbo" })).toThrow();
   });
 
   it("accepts stored PR coordinates and rejects a non-positive PR number", () => {
@@ -170,6 +191,8 @@ describe("TaskContext", () => {
     actor: "shade",
     title: "Add a lint rule",
     body: "Please add a lint rule",
+    agentModel: null,
+    agentEffort: null,
     deliveryId: "delivery-123",
     payload: { type: "Issue", action: "update", nested: { anything: [1, 2, 3] } },
   };
@@ -185,6 +208,19 @@ describe("TaskContext", () => {
 
   it("rejects an empty delivery id", () => {
     expect(() => Schema.decodeUnknownSync(TaskContext)({ ...valid, deliveryId: "" })).toThrow();
+  });
+
+  it("carries task-level agent overrides and validates the effort level (FUR-41)", () => {
+    const ctx = roundTrip(TaskContext, {
+      ...valid,
+      agentModel: "claude-haiku-4-5",
+      agentEffort: "low",
+    });
+    expect(ctx.agentModel).toBe("claude-haiku-4-5");
+    expect(ctx.agentEffort).toBe("low");
+    expect(() =>
+      Schema.decodeUnknownSync(TaskContext)({ ...valid, agentEffort: "warp-speed" }),
+    ).toThrow();
   });
 });
 

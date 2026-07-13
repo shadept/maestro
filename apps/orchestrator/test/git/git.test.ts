@@ -36,6 +36,8 @@ const makeSession = (n: number, branch: string): Session =>
     prUrl: null,
     terminationRequestedAt: null,
     pausedAt: null,
+    agentModel: null,
+    agentEffort: null,
     state: "WARM_IDLE",
     createdAt: new Date(),
     lastActivityAt: new Date(),
@@ -59,6 +61,7 @@ beforeAll(async () => {
     localCachePath: null,
     gitConventions: {},
     resources: {},
+    agent: {},
     createdAt: new Date(),
   });
 

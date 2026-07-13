@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { AgentOverrides } from "./AgentSettings.ts";
 import { ProjectId } from "./ids.ts";
 
 // Per-repo git-convention overrides. Absent key = orchestrator default
@@ -37,6 +38,8 @@ export const Project = Schema.Struct({
   localCachePath: Schema.NullOr(Schema.String),
   gitConventions: GitConventionOverrides,
   resources: ResourceTiers,
+  /** Project-level agent model/effort overrides (FUR-41). Absent key = deployment default. */
+  agent: AgentOverrides,
   createdAt: Schema.Date,
 });
 export type Project = typeof Project.Type;

@@ -1,5 +1,6 @@
 import { SessionStateChanged } from "@maestro/api";
 import {
+  type AgentEffort,
   canSessionTransition,
   type DbError,
   EntityNotFoundError,
@@ -31,6 +32,8 @@ const toSession = (row: typeof sessions.$inferSelect): Session =>
     state: row.state,
     terminationRequestedAt: row.terminationRequestedAt,
     pausedAt: row.pausedAt,
+    agentModel: row.agentModel,
+    agentEffort: row.agentEffort,
     createdAt: row.createdAt,
     lastActivityAt: row.lastActivityAt,
   });
@@ -84,6 +87,14 @@ export class SessionRepo extends Context.Service<
     /** Clears the circuit breaker (manual human resume). Idempotent. */
     readonly resume: (id: SessionId) => Effect.Effect<Session, DbError>;
     readonly setClaudeSessionUuid: (id: SessionId, uuid: string) => Effect.Effect<Session, DbError>;
+    /**
+     * Pins the model/effort the session's first turn resolved (FUR-41), so
+     * resume turns keep the settings the claude session started with.
+     */
+    readonly setAgentSettings: (
+      id: SessionId,
+      settings: { readonly model: string | null; readonly effort: AgentEffort | null },
+    ) => Effect.Effect<Session, DbError>;
     /** Records the forge PR opened for this session's branch (first outbound publish). */
     readonly setPullRequest: (
       id: SessionId,
@@ -258,6 +269,24 @@ export class SessionRepo extends Context.Service<
             client
               .update(sessions)
               .set({ claudeSessionUuid: uuid })
+              .where(eq(sessions.id, id))
+              .returning(),
+          );
+          const row = rows[0];
+          if (!row) {
+            return yield* new EntityNotFoundError({ entity: "Session", entityId: id });
+          }
+          return toSession(row);
+        }),
+        // like setClaudeSessionUuid: internal bookkeeping, not published
+        setAgentSettings: Effect.fn("SessionRepo.setAgentSettings")(function* (
+          id: SessionId,
+          settings: { readonly model: string | null; readonly effort: AgentEffort | null },
+        ) {
+          const rows = yield* dbTry("SessionRepo.setAgentSettings")(() =>
+            client
+              .update(sessions)
+              .set({ agentModel: settings.model, agentEffort: settings.effort })
               .where(eq(sessions.id, id))
               .returning(),
           );

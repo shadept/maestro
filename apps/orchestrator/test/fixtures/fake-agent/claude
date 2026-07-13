@@ -10,6 +10,9 @@
 #   MODE=NOCOMMIT -> succeed without committing (question-answer turn)
 #   MODE=SLOW     -> sleep a few seconds, then succeed without committing
 #                    (a window to deliver signals mid-EXECUTING)
+#   MODE=ARGS     -> write the full argv (one arg per line) to agent-argv.txt
+#                    in the worktree, then succeed without committing — lets
+#                    tests observe the exact worker command (FUR-41)
 set -e
 
 PROMPT="$2"
@@ -34,6 +37,11 @@ case "$PROMPT" in
   *MODE=SLOW*)
     sleep 5
     printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Finished slowly.\",\"session_id\":\"$SESSION_UUID\"}"
+    exit 0
+    ;;
+  *MODE=ARGS*)
+    printf '%s\n' "$@" > agent-argv.txt
+    printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Recorded argv.\",\"session_id\":\"$SESSION_UUID\"}"
     exit 0
     ;;
 esac

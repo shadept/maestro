@@ -1,4 +1,4 @@
-import type { DbError, Session, TaskContext } from "@maestro/domain";
+import type { AgentEffort, DbError, Project, Session, TaskContext } from "@maestro/domain";
 import { Context, Effect, Layer, Option, Redacted, Result, Stream } from "effect";
 import { AppConfig } from "../config/AppConfig.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
@@ -6,9 +6,20 @@ import { SessionRepo } from "../db/SessionRepo.ts";
 // The claude-code invocation contract (Tech Requirements §9), verified
 // against claude-code 2.1.207:
 //   claude -p <prompt> --output-format stream-json --verbose \
-//     --dangerously-skip-permissions [--resume <sessionUuid>]
+//     --dangerously-skip-permissions [--model <id>] [--effort <level>] \
+//     [--resume <sessionUuid>]
 // `--verbose` is mandatory with `-p --output-format stream-json`.
 // Auth: CLAUDE_CODE_OAUTH_TOKEN (subscription, preferred) or ANTHROPIC_API_KEY.
+//
+// Model/effort control (FUR-41): both `--model <id>` and `--effort <level>`
+// (low|medium|high|xhigh|max) exist in 2.1.207 — verified via `claude --help`.
+// Resolution is per-turn, most specific wins:
+//   task (label-parsed TaskContext override)
+//   > session pin (what the session's first turn resolved — resume stability)
+//   > project (row overrides) > deployment (MAESTRO_AGENT_MODEL/_EFFORT)
+//   > nothing (no flag; the CLI default — pre-FUR-41 behavior, byte-for-byte).
+// Model ids are not validated by Maestro: an invalid id fails the turn with
+// the CLI's error visible in the run logs (garbage config = loud failure).
 
 export type AgentEvent =
   | { readonly _tag: "SessionStarted"; readonly claudeSessionUuid: string }
@@ -19,6 +30,15 @@ export type AgentEvent =
 export interface AgentCommand {
   readonly argv: ReadonlyArray<string>;
   readonly env: Readonly<Record<string, string>>;
+  /**
+   * What the FUR-41 precedence chain resolved for this turn (null = CLI
+   * default, no flag passed). The executor pins these on the session after
+   * the first turn and warns when a resume turn switches models mid-session.
+   */
+  readonly resolved: {
+    readonly model: string | null;
+    readonly effort: AgentEffort | null;
+  };
 }
 
 /**
@@ -101,6 +121,8 @@ export class AgentContract extends Context.Service<
     readonly buildCommand: (args: {
       readonly session: Session;
       readonly context: TaskContext;
+      /** Supplies the project-level agent overrides (FUR-41). */
+      readonly project: Project;
       /** CLAUDE_CONFIG_DIR as seen by the worker (container path). */
       readonly configDir: string;
     }) => AgentCommand;
@@ -124,8 +146,19 @@ export class AgentContract extends Context.Service<
       const sessionRepo = yield* SessionRepo;
 
       return {
-        buildCommand: ({ session, context, configDir }) => {
+        buildCommand: ({ session, context, project, configDir }) => {
           const isFirstTurn = session.claudeSessionUuid === null;
+          // FUR-41 precedence: task > session pin > project > deployment.
+          const model =
+            context.agentModel ??
+            session.agentModel ??
+            project.agent.model ??
+            Option.getOrNull(config.agentModel);
+          const effort =
+            context.agentEffort ??
+            session.agentEffort ??
+            project.agent.effort ??
+            Option.getOrNull(config.agentEffort);
           const task =
             isFirstTurn && context.title !== null
               ? `${context.title}\n\n${context.body}`
@@ -145,6 +178,8 @@ export class AgentContract extends Context.Service<
             "stream-json",
             "--verbose",
             "--dangerously-skip-permissions",
+            ...(model !== null ? ["--model", model] : []),
+            ...(effort !== null ? ["--effort", effort] : []),
             ...(session.claudeSessionUuid !== null ? ["--resume", session.claudeSessionUuid] : []),
           ];
           const auth = Option.match(config.agentOauthToken, {
@@ -155,7 +190,11 @@ export class AgentContract extends Context.Service<
                 onNone: () => ({}),
               }),
           });
-          return { argv, env: { CLAUDE_CONFIG_DIR: configDir, ...auth } };
+          return {
+            argv,
+            env: { CLAUDE_CONFIG_DIR: configDir, ...auth },
+            resolved: { model, effort },
+          };
         },
 
         parseStream: <E>(chunks: Stream.Stream<string, E>) =>

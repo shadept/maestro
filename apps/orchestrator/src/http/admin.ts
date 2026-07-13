@@ -1,6 +1,6 @@
 import { AdminApi, AdminAuth } from "@maestro/api";
 import { type DbError, EntityNotFoundError } from "@maestro/domain";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer, Option, Redacted } from "effect";
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi";
 import { AppConfig } from "../config/AppConfig.ts";
 import { SessionRepo } from "../db/SessionRepo.ts";
@@ -30,7 +30,7 @@ const AdminHandlersLive = HttpApiBuilder.group(AdminApi, "admin", (handlers) =>
   Effect.gen(function* () {
     const sessionRepo = yield* SessionRepo;
     const taskRunRepo = yield* TaskRunRepo;
-    const { storageRoot } = yield* AppConfig;
+    const { storageRoot, traceViewerUrlTemplate } = yield* AppConfig;
 
     // Missing entities map to the contract's 404; any other DbError is an
     // infrastructure defect here (500), not part of the API contract.
@@ -67,6 +67,11 @@ const AdminHandlersLive = HttpApiBuilder.group(AdminApi, "admin", (handlers) =>
       .handle("getTaskRunLogs", ({ params }) => orNotFound(taskRunRepo.getLogs(params.taskRunId)))
       .handle("getTaskRunContext", ({ params }) =>
         orNotFound(taskRunRepo.getContext(params.taskRunId)),
+      )
+      .handle("getObservabilityConfig", () =>
+        Effect.succeed({
+          traceViewerUrlTemplate: Option.getOrNull(traceViewerUrlTemplate),
+        }),
       );
   }),
 );

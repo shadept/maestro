@@ -10,7 +10,7 @@ import type {
   TaskRunCause,
   TaskRunId,
 } from "@maestro/domain";
-import { Context, Effect, Fiber, Layer, Stream } from "effect";
+import { Context, Duration, Effect, Fiber, Layer, Metric, Stream } from "effect";
 import { AgentContract, type AgentEvent, extractPrProposal } from "../agent/AgentContract.ts";
 import { AppConfig } from "../config/AppConfig.ts";
 import { ProjectRepo } from "../db/ProjectRepo.ts";
@@ -21,6 +21,7 @@ import { GitCache } from "../git/GitCache.ts";
 import { forgeCredentials } from "../git/git-command.ts";
 import { OutboundGit } from "../git/OutboundGit.ts";
 import { WorktreeManager } from "../git/WorktreeManager.ts";
+import * as Metrics from "../observability/metrics.ts";
 import type { TurnJob } from "../queue/TurnQueue.ts";
 import { type ExitInfo, WorkerRuntime } from "../runtime/WorkerRuntime.ts";
 import { sessionConfigDir } from "../storage/paths.ts";
@@ -357,6 +358,20 @@ export class TurnExecutor extends Context.Service<
 
       return {
         execute: Effect.fn("TurnExecutor.execute")(function* (job: TurnJob) {
+          // M2.10: this Effect.fn span is the turn's root span — persist its
+          // trace id on the TaskRun immediately so the admin UI can link out
+          // even if the turn never settles. Runs on every invocation
+          // (including a replay below), reflecting the most recent attempt.
+          yield* Effect.currentSpan.pipe(
+            Effect.flatMap((span) => taskRunRepo.setTraceId(job.taskRunId, span.traceId)),
+            Effect.catch((error) =>
+              Effect.logWarning("TurnExecutor: failed to persist trace id", {
+                taskRunId: job.taskRunId,
+                error: String(error),
+              }),
+            ),
+          );
+
           const taskRun = yield* taskRunRepo.get(job.taskRunId);
           if (taskRun.state !== "PENDING") {
             // replayed or crash-recovered job for an already-started turn —
@@ -381,6 +396,7 @@ export class TurnExecutor extends Context.Service<
             return;
           }
 
+          const turnStart = Date.now();
           yield* runTurn(job, session).pipe(
             // Orchestration errors (git/db/runtime) still settle the turn as
             // FAILED with the cause captured, best-effort, then propagate.
@@ -422,6 +438,13 @@ export class TurnExecutor extends Context.Service<
             // teardown. Also runs on interrupt: reading a null marker is a
             // no-op, and an unsettled (still-EXECUTING) run defers again.
             Effect.ensuring(finalizeTermination(job.sessionId)),
+            // Turn duration histogram (M2.10): wall clock from here to
+            // settled/failed/interrupted, whichever comes first.
+            Effect.ensuring(
+              Effect.suspend(() =>
+                Metric.update(Metrics.turnDuration, Duration.millis(Date.now() - turnStart)),
+              ),
+            ),
           );
         }),
       };

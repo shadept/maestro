@@ -1,8 +1,9 @@
 import { CallbackDeliveryError, type DbError } from "@maestro/domain";
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer, Metric, Schema } from "effect";
 import { type OutboxEntry, OutboxRepo } from "../db/OutboxRepo.ts";
 import { TaskRunRepo } from "../db/TaskRunRepo.ts";
 import { TurnOutcomePayload } from "../engine/TurnSettlement.ts";
+import * as Metrics from "../observability/metrics.ts";
 import { formatTurnComment } from "./format.ts";
 import { LinearCallback, linearIssueIdFrom } from "./LinearCallback.ts";
 
@@ -88,6 +89,13 @@ export class CallbackWorker extends Context.Service<
       return {
         drainOnce: Effect.fn("CallbackWorker.drainOnce")(function* () {
           const due = yield* outboxRepo.listPending(BATCH_SIZE);
+          // Callback outbox lag (M2.10): age of the oldest PENDING row (due is
+          // oldest-first); 0 when nothing is waiting.
+          const oldest = due[0];
+          yield* Metric.update(
+            Metrics.callbackOutboxLag,
+            oldest ? Date.now() - oldest.createdAt.getTime() : 0,
+          );
           for (const entry of due) {
             yield* deliver(entry).pipe(
               Effect.matchEffect({

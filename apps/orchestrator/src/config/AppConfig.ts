@@ -106,6 +106,29 @@ const config = {
   adminUiDist: Config.nonEmptyString("MAESTRO_ADMIN_UI_DIST").pipe(
     Config.withDefault(defaultAdminUiDist),
   ),
+  /**
+   * OTLP collector base URL (M2.10, Tech Requirements §15): traces post to
+   * `<endpoint>/v1/traces`, metrics to `<endpoint>/v1/metrics`. Optional — the
+   * exporter layers are Layer.empty when unset, so an unconfigured deployment
+   * pays zero network cost. Effect's native tracer still assigns real
+   * span/trace ids either way; TurnExecutor persists them on the TaskRun
+   * regardless of whether anything is exported.
+   */
+  otlpEndpoint: Config.option(Config.nonEmptyString("MAESTRO_OTLP_ENDPOINT")),
+  /** OTLP resource service.name attribute. Optional, default: maestro-orchestrator. */
+  otlpServiceName: Config.nonEmptyString("MAESTRO_OTLP_SERVICE_NAME").pipe(
+    Config.withDefault("maestro-orchestrator"),
+  ),
+  /** Prometheus text-format scrape endpoint at GET /metrics. Optional, default: enabled. */
+  prometheusMetricsEnabled: Config.boolean("MAESTRO_PROMETHEUS_METRICS_ENABLED").pipe(
+    Config.withDefault(true),
+  ),
+  /**
+   * Trace-viewer URL template for the admin UI TaskRun detail link (e.g. a
+   * Grafana Explore URL). The admin UI substitutes the literal `{traceId}`
+   * placeholder client-side. Optional — absent means no link is rendered.
+   */
+  traceViewerUrlTemplate: Config.option(Config.nonEmptyString("MAESTRO_TRACE_VIEWER_URL_TEMPLATE")),
 };
 
 export class AppConfig extends Context.Service<
@@ -136,6 +159,10 @@ export class AppConfig extends Context.Service<
     readonly logFormat: "json" | "pretty";
     readonly port: number;
     readonly adminUiDist: string;
+    readonly otlpEndpoint: Option.Option<string>;
+    readonly otlpServiceName: string;
+    readonly prometheusMetricsEnabled: boolean;
+    readonly traceViewerUrlTemplate: Option.Option<string>;
   }
 >()("maestro/config/AppConfig") {
   static readonly layer = Layer.effect(AppConfig, Config.all(config));
@@ -168,6 +195,10 @@ export class AppConfig extends Context.Service<
       logFormat: "pretty",
       port: 0,
       adminUiDist: "/tmp/maestro-test/admin-ui-dist",
+      otlpEndpoint: Option.none(),
+      otlpServiceName: "maestro-orchestrator",
+      prometheusMetricsEnabled: true,
+      traceViewerUrlTemplate: Option.none(),
       ...overrides,
     });
 }

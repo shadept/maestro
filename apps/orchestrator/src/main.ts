@@ -3,8 +3,9 @@
 // service classes and receives implementations from here.
 import { createServer } from "node:http";
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
-import { Context, Deferred, Effect, Layer, Logger, Schedule } from "effect";
-import { HttpRouter } from "effect/unstable/http";
+import { Context, Deferred, Effect, Layer, Logger, Option, Schedule } from "effect";
+import { FetchHttpClient, HttpRouter } from "effect/unstable/http";
+import { OtlpMetrics, OtlpSerialization, OtlpTracer } from "effect/unstable/observability";
 import { AgentContract } from "./agent/AgentContract.ts";
 import { CallbackWorker } from "./callback/CallbackWorker.ts";
 import { LinearCallback } from "./callback/LinearCallback.ts";
@@ -30,10 +31,12 @@ import { WorktreeManager } from "./git/WorktreeManager.ts";
 import { AdminApiRoutes } from "./http/admin.ts";
 import { EventsRoutes } from "./http/events.ts";
 import { HealthRoutes } from "./http/health.ts";
+import { MetricsRoutes } from "./http/metrics.ts";
 import { StaticRoutes } from "./http/static.ts";
 import { WebhookRoutes } from "./http/webhooks.ts";
 import { IngestPipeline } from "./ingest/IngestPipeline.ts";
 import { LinearIngest } from "./ingest/LinearIngest.ts";
+import * as Metrics from "./observability/metrics.ts";
 import { TurnQueue } from "./queue/TurnQueue.ts";
 import { WorkerRuntime } from "./runtime/WorkerRuntime.ts";
 
@@ -55,6 +58,30 @@ const ServerLive = Layer.unwrap(
     return NodeHttpServer.layer(createServer, { port });
   }),
 );
+
+/**
+ * OTLP tracing + metrics export (M2.10, Tech Requirements §15): every
+ * Effect.fn span already exists (CLAUDE.md convention since M1.1) — this
+ * layer only installs the exporter. Layer.empty when MAESTRO_OTLP_ENDPOINT is
+ * unset, so an unconfigured deployment pays zero network cost; Effect's
+ * native in-memory Tracer still assigns real span/trace ids either way
+ * (TurnExecutor persists them on the TaskRun regardless of export).
+ */
+const TracingLive = Layer.unwrap(
+  Effect.gen(function* () {
+    const { otlpEndpoint, otlpServiceName } = yield* AppConfig;
+    if (Option.isNone(otlpEndpoint)) return Layer.empty;
+    const resource = { serviceName: otlpServiceName };
+    const endpoint = otlpEndpoint.value;
+    return Layer.mergeAll(
+      OtlpTracer.layer({ url: `${endpoint}/v1/traces`, resource }),
+      OtlpMetrics.layer({ url: `${endpoint}/v1/metrics`, resource }),
+    );
+  }),
+).pipe(Layer.provide(OtlpSerialization.layerJson), Layer.provide(FetchHttpClient.layer));
+
+/** Touches every Metric instrument once so GET /metrics is non-empty from boot. */
+const MetricsInitLive = Layer.effectDiscard(Metrics.initialize);
 
 const ReposLive = Layer.mergeAll(
   ProjectRepo.layer,
@@ -202,19 +229,22 @@ const IngestLive = LinearIngest.layer.pipe(
 );
 
 // Health probes, the SSE firehose, the admin read API (FUR-16), the admin UI
-// bundle at `/` (FUR-17), and the Linear webhook endpoint (FUR-18). Handlers
-// pull repos + EventBus + ingest services from the shared layers below.
+// bundle at `/` (FUR-17), the Linear webhook endpoint (FUR-18), and the
+// Prometheus scrape endpoint (M2.10). Handlers pull repos + EventBus + ingest
+// services from the shared layers below.
 const HttpRoutes = Layer.mergeAll(
   HealthRoutes,
   EventsRoutes,
   AdminApiRoutes,
   StaticRoutes,
   WebhookRoutes,
+  MetricsRoutes,
 );
 
 const AppLive = HttpRouter.serve(HttpRoutes).pipe(
   Layer.merge(TurnWorkerLive),
   Layer.merge(CallbackWorkerLive),
+  Layer.merge(MetricsInitLive),
   Layer.provide(ServerLive),
   Layer.provide(IngestLive),
   Layer.provide(TurnQueueLive),
@@ -224,6 +254,7 @@ const AppLive = HttpRouter.serve(HttpRoutes).pipe(
   Layer.provide(EventBus.layer),
   Layer.provide(Db.layer),
   Layer.provide(LoggerLive),
+  Layer.provide(TracingLive),
   Layer.provide(AppConfig.layer),
 );
 

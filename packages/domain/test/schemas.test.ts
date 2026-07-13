@@ -147,6 +147,7 @@ describe("TaskRun", () => {
     cause: null,
     resultText: null,
     failureSummary: null,
+    traceId: null,
   };
 
   it("round-trips", () => {
@@ -165,6 +166,11 @@ describe("TaskRun", () => {
     });
     expect(failed.cause).toBe("OOM");
     expect(failed.failureSummary).toBe("worker exited with code 137 (OOM)");
+  });
+
+  it("round-trips a persisted trace id", () => {
+    const run = roundTrip(TaskRun, { ...valid, traceId: "abcdef0123456789" });
+    expect(run.traceId).toBe("abcdef0123456789");
   });
 
   it("rejects an unknown cause", () => {

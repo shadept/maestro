@@ -310,6 +310,28 @@ describe("TaskRunRepo", () => {
     expect(result.resultText).toBe("All done.");
   });
 
+  it("setTraceId persists and surfaces on get (M2.10)", async () => {
+    const project = await run(makeProject);
+    const session = await run(makeSession(project));
+    const created = await run(makeRun(session));
+    expect(created.traceId).toBeNull();
+
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* TaskRunRepo;
+        yield* repo.setTraceId(created.id, "abcdef0123456789abcdef0123456789");
+      }),
+    );
+
+    const fetched = await run(
+      Effect.gen(function* () {
+        const repo = yield* TaskRunRepo;
+        return yield* repo.get(created.id);
+      }),
+    );
+    expect(fetched.traceId).toBe("abcdef0123456789abcdef0123456789");
+  });
+
   it("records failure cause + summary atomically with the transition and publishes them", async () => {
     const project = await run(makeProject);
     const session = await run(makeSession(project));

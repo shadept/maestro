@@ -39,6 +39,17 @@ export const SessionWorkspace = Schema.Struct({
 export type SessionWorkspace = typeof SessionWorkspace.Type;
 
 /**
+ * Trace-viewer link configuration (M2.10): a deployment-configured URL
+ * template (e.g. a Grafana Explore URL) for linking a TaskRun's trace id out
+ * to the operator's trace viewer. The admin UI substitutes the literal
+ * `{traceId}` placeholder client-side; null means no link is rendered.
+ */
+export const ObservabilityConfig = Schema.Struct({
+  traceViewerUrlTemplate: Schema.NullOr(Schema.NonEmptyString),
+});
+export type ObservabilityConfig = typeof ObservabilityConfig.Type;
+
+/**
  * NOTE: `GET /api/events` (SSE) is deliberately NOT part of this contract —
  * it is a long-lived text/event-stream endpoint served by a raw route. Its
  * payload contract is `MaestroEventFromJsonString` in `events.ts`.
@@ -83,6 +94,11 @@ export const AdminApi = HttpApi.make("maestro-admin")
           params: { taskRunId: TaskRunId },
           success: TaskContext,
           error: HttpApiError.NotFound,
+        }),
+      )
+      .add(
+        HttpApiEndpoint.get("getObservabilityConfig", "/observability/config", {
+          success: ObservabilityConfig,
         }),
       ),
   )

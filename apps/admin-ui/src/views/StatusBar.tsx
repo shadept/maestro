@@ -9,12 +9,20 @@ import type { EventStore } from "../store.ts";
 export const StatusBar = (props: { store: EventStore; onLogout: () => void }) => {
   const activeTurns = () => props.store.activeTurns() ?? props.store.systemStatus()?.activeTurns;
 
+  // "reconnecting (retry 3 in ≤8s)" while the SSE supervisor waits out backoff.
+  const connectionLabel = () => {
+    const retry = props.store.retry();
+    return retry === null
+      ? props.store.connection()
+      : `${props.store.connection()} (retry ${retry.attempt} in ≤${Math.ceil(retry.delayMs / 1000)}s)`;
+  };
+
   return (
     <header class="status-bar">
       <a href="#/" class="brand">
         Maestro
       </a>
-      <span class={`chip connection-${props.store.connection()}`}>{props.store.connection()}</span>
+      <span class={`chip connection-${props.store.connection()}`}>{connectionLabel()}</span>
       <Show
         when={props.store.systemStatus()}
         fallback={<span class="muted">awaiting status…</span>}

@@ -34,9 +34,9 @@ export const App = () => {
   };
 
   const connect = (token: string): void => {
-    // A stale stored token (orchestrator restarted with a new
-    // MAESTRO_ADMIN_TOKEN) 401s the SSE stream, which closes EventSource for
-    // good — we clear the token and fall back to the gate rather than loop.
+    // The SSE supervisor reconnects through outages on its own; this callback
+    // only fires on a probe-confirmed 401 (orchestrator restarted with a new
+    // MAESTRO_ADMIN_TOKEN) — clear the token and fall back to the gate.
     disconnect = connectEvents(token, store, () =>
       logout("Stored token rejected — enter the current MAESTRO_ADMIN_TOKEN."),
     );

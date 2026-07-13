@@ -15,6 +15,9 @@ import { createSignal } from "solid-js";
 
 export type ConnectionState = "connecting" | "open" | "reconnecting";
 
+/** A pending SSE reconnect attempt — surfaced by the status bar. */
+export type RetryState = { readonly attempt: number; readonly delayMs: number };
+
 /** Keep only the newest log bytes per run — a debug tail, not an archive. */
 const MAX_LOG_CHARS = 512 * 1024;
 
@@ -29,6 +32,8 @@ export const createEventStore = () => {
   /** In-process active-turn count from the latest QueueChanged; null until one arrives. */
   const [activeTurns, setActiveTurns] = createSignal<number | null>(null);
   const [connection, setConnection] = createSignal<ConnectionState>("connecting");
+  /** Non-null while the SSE supervisor is waiting out a reconnect backoff. */
+  const [retry, setRetry] = createSignal<RetryState | null>(null);
 
   const apply = (event: MaestroEvent): void => {
     switch (event._tag) {
@@ -60,6 +65,7 @@ export const createEventStore = () => {
     setSystemStatus(null);
     setActiveTurns(null);
     setConnection("open");
+    setRetry(null);
   };
 
   /** The log tail view rebases a run's buffer onto the historical log fetch. */
@@ -103,6 +109,8 @@ export const createEventStore = () => {
     rebaseLogs,
     setConnection,
     connection,
+    setRetry,
+    retry,
     systemStatus,
     activeTurns,
     sessionList,

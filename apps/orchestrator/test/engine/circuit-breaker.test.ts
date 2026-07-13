@@ -294,7 +294,7 @@ describe("failure circuit breaker (FUR-39)", () => {
         );
         expect(outbox.paused).toHaveLength(1);
         expect(outbox.paused[0]?.summary).toContain(
-          `paused this session after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures`,
+          `Paused this session after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures`,
         );
         expect(outbox.failed).toHaveLength(1); // 3 failures, identical text, one comment
         expect(outbox.failed[0]?.summary).toBe("fake agent exploded");

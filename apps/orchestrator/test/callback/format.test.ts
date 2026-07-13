@@ -47,10 +47,10 @@ describe("formatTurnComment", () => {
     const body = formatTurnComment(
       outcome({
         kind: "session-paused",
-        summary: "Maestro paused this session after 3 consecutive failures.",
+        summary: "Paused this session after 3 consecutive failures.",
       }),
     );
     expect(body.startsWith(MAESTRO_COMMENT_MARKER)).toBe(true);
-    expect(body).toContain("paused this session after 3 consecutive failures");
+    expect(body).toContain("Paused this session after 3 consecutive failures");
   });
 });

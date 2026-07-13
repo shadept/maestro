@@ -55,6 +55,15 @@ const config = {
   linearWebhookSecret: Config.option(Config.redacted("MAESTRO_LINEAR_WEBHOOK_SECRET")),
   /** Linear API token for outbound callbacks. Optional at boot — absent token fails per-post. */
   linearApiToken: Config.option(Config.redacted("MAESTRO_LINEAR_API_TOKEN")),
+  /**
+   * How MAESTRO_LINEAR_API_TOKEN authenticates (FUR-42): "api-key" = personal
+   * key (raw Authorization header), "oauth" = app-actor access token (Bearer).
+   * Optional — absent means auto-detect by the `lin_api_` prefix; set it only
+   * for legacy unprefixed personal keys the heuristic would misread as OAuth.
+   */
+  linearTokenKind: Config.option(
+    Config.literals(["api-key", "oauth"], "MAESTRO_LINEAR_TOKEN_KIND"),
+  ),
   /** Label that hands a Linear issue to Maestro (label-trigger model, FUR-18). */
   linearTriggerLabel: Config.nonEmptyString("MAESTRO_LINEAR_TRIGGER_LABEL").pipe(
     Config.withDefault("maestro"),
@@ -105,6 +114,7 @@ export class AppConfig extends Context.Service<
     readonly gitAuthorEmail: string;
     readonly linearWebhookSecret: Option.Option<Redacted.Redacted>;
     readonly linearApiToken: Option.Option<Redacted.Redacted>;
+    readonly linearTokenKind: Option.Option<"api-key" | "oauth">;
     readonly linearTriggerLabel: string;
     readonly linearBotUserId: Option.Option<string>;
     readonly agentOauthToken: Option.Option<Redacted.Redacted>;
@@ -136,6 +146,7 @@ export class AppConfig extends Context.Service<
       gitAuthorEmail: "maestro@localhost",
       linearWebhookSecret: Option.none(),
       linearApiToken: Option.none(),
+      linearTokenKind: Option.none(),
       linearTriggerLabel: "maestro",
       linearBotUserId: Option.none(),
       agentOauthToken: Option.none(),

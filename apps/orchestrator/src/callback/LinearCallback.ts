@@ -9,6 +9,32 @@ export interface LinearCommentCall {
   readonly body: string;
 }
 
+/** How a Linear token authenticates — mirrors the SDK's two constructor options. */
+export type LinearTokenKind = "api-key" | "oauth";
+
+/**
+ * Personal API keys carry the `lin_api_` prefix (Linear → Security & access);
+ * OAuth app-actor access tokens do not (FUR-42). Legacy unprefixed personal
+ * keys are the one case the heuristic misreads — MAESTRO_LINEAR_TOKEN_KIND
+ * overrides it explicitly.
+ */
+export const detectLinearTokenKind = (token: string): LinearTokenKind =>
+  token.startsWith("lin_api_") ? "api-key" : "oauth";
+
+/**
+ * The @linear/sdk constructor options for a token. The two kinds send
+ * different Authorization headers (verified in @linear/sdk 88
+ * parseClientOptions): `apiKey` goes out raw, as personal keys require;
+ * `accessToken` goes out as `Bearer <token>`, as OAuth demands.
+ */
+export const linearClientOptionsFor = (
+  token: string,
+  kind: Option.Option<LinearTokenKind> = Option.none(),
+): { readonly apiKey: string } | { readonly accessToken: string } => {
+  const resolved = Option.getOrElse(kind, () => detectLinearTokenKind(token));
+  return resolved === "api-key" ? { apiKey: token } : { accessToken: token };
+};
+
 /**
  * The Linear issue a raw webhook payload (TaskContext.payload — "preserved
  * opaquely for outbound responders") belongs to: `data.issueId` on Comment
@@ -45,7 +71,8 @@ export class LinearCallback extends Context.Service<
       const config = yield* AppConfig;
       const client = Option.map(
         config.linearApiToken,
-        (token) => new LinearClient({ apiKey: Redacted.value(token) }),
+        (token) =>
+          new LinearClient(linearClientOptionsFor(Redacted.value(token), config.linearTokenKind)),
       );
 
       return {

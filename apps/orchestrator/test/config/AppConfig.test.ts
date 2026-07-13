@@ -58,6 +58,18 @@ describe("AppConfig", () => {
     expect(config.gitAuthorEmail).toBe("bot@example.com");
   });
 
+  it("parses MAESTRO_LINEAR_TOKEN_KIND and defaults it to none (auto-detect)", async () => {
+    const auto = await load(validEnv);
+    expect(Option.isNone(auto.linearTokenKind)).toBe(true);
+    const explicit = await load({ ...validEnv, MAESTRO_LINEAR_TOKEN_KIND: "oauth" });
+    expect(explicit.linearTokenKind).toEqual(Option.some("oauth"));
+    const error = await load({ ...validEnv, MAESTRO_LINEAR_TOKEN_KIND: "bogus" }).then(
+      () => null,
+      (e: unknown) => String(e),
+    );
+    expect(error).toContain("MAESTRO_LINEAR_TOKEN_KIND");
+  });
+
   it("fails with a readable error naming the missing variables", async () => {
     const error = await load({}).then(
       () => null,

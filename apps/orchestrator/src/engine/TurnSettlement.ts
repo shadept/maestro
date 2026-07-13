@@ -165,7 +165,9 @@ export class TurnSettlement extends Context.Service<
             sessionId: args.sessionId,
             ticket: args.ticket,
             summary:
-              `Maestro paused this session after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures. ` +
+              // No leading "Maestro" — formatTurnComment already prefixes the
+              // marker; doubling read as "Maestro — Maestro paused" (FUR-42).
+              `Paused this session after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures. ` +
               `New comments will not trigger turns; to resume, re-apply the trigger label ` +
               `("${config.linearTriggerLabel}") to the issue.`,
             cause: null,

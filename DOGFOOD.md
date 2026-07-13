@@ -161,7 +161,7 @@ In Linear → Settings → API → Webhooks → New webhook:
 
 - URL: `https://<tunnel-host>/api/webhooks/linear`
 - Team: FUR (or workspace-wide)
-- Event types: **Issues** and **Comments** (label changes arrive as Issue
+- Event types: **Issues** and **Comments** (delegation changes arrive as Issue
   update events)
 - Copy the signing secret into `MAESTRO_LINEAR_WEBHOOK_SECRET`, restart the
   orchestrator after editing `.env`.
@@ -184,13 +184,16 @@ bundle is served by the orchestrator (rebuild it with
 
 1. Create a small, real ticket in team FUR (something claude-code can finish
    in one turn — a doc tweak, a tiny refactor with clear acceptance).
-2. Apply the `maestro` label. Watch the admin UI: session appears, turn goes
-   PENDING → PROVISIONING → EXECUTING with live logs.
+2. Delegate the issue to the **Maestro** app (assign it to Maestro — Linear
+   sets you as assignee and Maestro as delegate; that's expected). Watch the
+   admin UI: session appears, turn goes PENDING → PROVISIONING → EXECUTING
+   with live logs.
 3. On completion: session branch `maestro/FUR-<n>` pushed, **draft PR** opened
    on shadept/maestro, result comment lands on the ticket — authored by the
    **Maestro app** if the FUR-42 app token is configured, and no self-triggered
    turn follows it (the id guard catches the app's own comment).
-4. Comment on the ticket (as a human, not the bot user) — turn 2 must start
+4. Comment `@maestro <instruction>` on the ticket (as a human, not the bot
+   user; plain comments without the mention are inert) — turn 2 must start
    and **resume** the same claude session (`--resume <uuid>`; check the
    session's `claudeSessionUuid` stays constant and the agent has context).
 5. Review + merge the PR, then move the ticket to Done — verify teardown:

@@ -22,6 +22,10 @@ export const SessionDetail = (props: {
     (sessionId) => props.client.getSessionWorkspace(sessionId),
   );
 
+  // Deployment-wide, not per-session — fetched once and handed down to every
+  // TaskRunRow so each can render its own trace-viewer link (M2.10).
+  const [observability] = createResource(() => props.client.getObservabilityConfig());
+
   const [historyError, setHistoryError] = createSignal<string | null>(null);
   const [historyLoaded] = createResource(
     () => props.sessionId,
@@ -106,7 +110,14 @@ export const SessionDetail = (props: {
         fallback={<p class="muted">{historyLoaded() ? "No turns recorded." : "Loading turns…"}</p>}
       >
         <For each={runs()}>
-          {(run) => <TaskRunRow run={run} store={props.store} client={props.client} />}
+          {(run) => (
+            <TaskRunRow
+              run={run}
+              store={props.store}
+              client={props.client}
+              traceViewerUrlTemplate={observability()?.traceViewerUrlTemplate ?? null}
+            />
+          )}
         </For>
       </Show>
     </section>
@@ -131,7 +142,16 @@ const FailureSummary = (props: { text: string }) => {
   );
 };
 
-const TaskRunRow = (props: { run: TaskRun; store: EventStore; client: AdminClient }) => {
+/** Substitutes the `{traceId}` placeholder in a deployment-configured trace-viewer URL template. */
+const traceUrl = (template: string, traceId: string): string =>
+  template.replaceAll("{traceId}", traceId);
+
+const TaskRunRow = (props: {
+  run: TaskRun;
+  store: EventStore;
+  client: AdminClient;
+  traceViewerUrlTemplate: string | null;
+}) => {
   const [expanded, setExpanded] = createSignal(false);
   const [context] = createResource(
     () => (expanded() ? props.run.id : null),
@@ -160,6 +180,22 @@ const TaskRunRow = (props: { run: TaskRun; store: EventStore; client: AdminClien
                 <h4>Result</h4>
                 <pre class="result">{text()}</pre>
               </>
+            )}
+          </Show>
+          <Show when={props.traceViewerUrlTemplate}>
+            {(template) => (
+              <Show when={props.run.traceId}>
+                {(traceId) => (
+                  <>
+                    <h4>Trace</h4>
+                    <p>
+                      <a href={traceUrl(template(), traceId())} target="_blank" rel="noreferrer">
+                        {traceId()}
+                      </a>
+                    </p>
+                  </>
+                )}
+              </Show>
             )}
           </Show>
           <h4>Inbound payload</h4>

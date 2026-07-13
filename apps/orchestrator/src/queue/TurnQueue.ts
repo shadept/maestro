@@ -5,10 +5,11 @@ import {
   type SessionId,
   type TaskRunId,
 } from "@maestro/domain";
-import { Context, Effect, Layer, type Scope } from "effect";
+import { Context, Effect, Layer, Metric, type Scope } from "effect";
 import { type JobInsert, PgBoss } from "pg-boss";
 import { AppConfig } from "../config/AppConfig.ts";
 import { EventBus } from "../events/EventBus.ts";
+import * as Metrics from "../observability/metrics.ts";
 
 /**
  * A queued turn. The pg-boss job carries the TaskRun id as its job id (no
@@ -121,17 +122,22 @@ export class TurnQueue extends Context.Service<
       // enqueue (job accepted), dispatch (handler started), settle (handler
       // finished either way). `activeCount` is the in-process running-turn
       // count at publish time; see the event schema for the payload decision.
+      // Same signal backs the M2.10 pool-occupancy gauge.
       const publishQueueChanged = (
         trigger: QueueChanged["trigger"],
         job: TurnJob,
       ): Effect.Effect<void> =>
-        bus.publish(
-          QueueChanged.make({
-            trigger,
-            taskRunId: job.taskRunId,
-            sessionId: job.sessionId,
-            activeCount: running.size,
-          }),
+        Metric.update(Metrics.poolOccupancy, running.size).pipe(
+          Effect.andThen(
+            bus.publish(
+              QueueChanged.make({
+                trigger,
+                taskRunId: job.taskRunId,
+                sessionId: job.sessionId,
+                activeCount: running.size,
+              }),
+            ),
+          ),
         );
 
       const boss = yield* Effect.acquireRelease(
@@ -237,10 +243,25 @@ export class TurnQueue extends Context.Service<
             }
           });
 
+          // Queue-depth gauge (M2.10): sampled here rather than per-dispatch —
+          // getQueueStats runs a Postgres aggregate (cached by pg-boss, but
+          // still a query), and the heartbeat's ~30s cadence is fresh enough
+          // for a dashboard while keeping that cost off the 500ms dispatch loop.
+          const sampleQueueDepth = Effect.tryPromise({
+            try: () => boss.getQueueStats(QUEUE),
+            catch: operationError("TurnQueue.getQueueStats"),
+          }).pipe(
+            Effect.flatMap((stats) => Metric.update(Metrics.queueDepth, stats[0]?.readyCount ?? 0)),
+            Effect.catch((error) => Effect.logWarning("queue depth sample failed", error)),
+          );
+
           const heartbeat = Effect.suspend(() => {
             const active = [...running.values()];
-            if (active.length === 0) return Effect.void;
-            return settle("TurnQueue.touch", () => boss.touch(QUEUE, active));
+            const touch =
+              active.length === 0
+                ? Effect.void
+                : settle("TurnQueue.touch", () => boss.touch(QUEUE, active));
+            return Effect.andThen(touch, sampleQueueDepth);
           });
 
           // Transient DB errors must not kill the loops — log and keep polling.

@@ -52,5 +52,7 @@ export const TaskRun = Schema.Struct({
    * Postgres.
    */
   failureSummary: Schema.NullOr(Schema.String),
+  /** Root span trace id (M2.10), persisted as soon as the turn's handler starts. */
+  traceId: Schema.NullOr(Schema.String),
 });
 export type TaskRun = typeof TaskRun.Type;

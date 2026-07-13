@@ -34,6 +34,7 @@ export const createAdminClient = (token: string) => {
       call((c) => c.admin.getTaskRunLogs({ params: { taskRunId } })),
     getTaskRunContext: (taskRunId: TaskRunId) =>
       call((c) => c.admin.getTaskRunContext({ params: { taskRunId } })),
+    getObservabilityConfig: () => call((c) => c.admin.getObservabilityConfig()),
   };
 };
 

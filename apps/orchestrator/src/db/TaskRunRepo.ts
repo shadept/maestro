@@ -32,6 +32,7 @@ const toTaskRun = (row: typeof taskRuns.$inferSelect): TaskRun =>
     cause: row.cause,
     resultText: row.resultText,
     failureSummary: row.failureSummary,
+    traceId: row.traceId,
   });
 
 const allStates = Object.keys(taskRunTransitions) as ReadonlyArray<TaskRunState>;

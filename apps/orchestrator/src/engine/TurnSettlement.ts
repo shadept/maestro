@@ -49,8 +49,9 @@ export const prOf = (session: Session): PrReference | null =>
 /**
  * Failure circuit breaker (FUR-39 layer 2): this many consecutive FAILED
  * turns with no intervening success pauses the session — ingest stops
- * accepting auto-triggered turns until a human resumes it (re-applies the
- * trigger label). In-code constant by design: a misconfigured deployment must
+ * accepting auto-triggered turns until a human resumes it (mentions the agent
+ * in a comment, or re-delegates the issue to it — FUR-37 mechanism).
+ * In-code constant by design: a misconfigured deployment must
  * not be able to raise it. NOTE: resume does not reset the count (it is
  * derived from settled runs, not stored), so after a manual resume a single
  * further failure re-trips the breaker — deliberate: the session is still
@@ -168,8 +169,9 @@ export class TurnSettlement extends Context.Service<
               // No leading "Maestro" — formatTurnComment already prefixes the
               // marker; doubling read as "Maestro — Maestro paused" (FUR-42).
               `Paused this session after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures. ` +
-              `New comments will not trigger turns; to resume, re-apply the trigger label ` +
-              `("${config.linearTriggerLabel}") to the issue.`,
+              `New turns will not be triggered; to resume, mention ` +
+              `@${config.linearMentionHandle} in a comment on this issue ` +
+              `(or un-delegate and re-delegate it to Maestro).`,
             cause: null,
             pr: prOf(session),
           });

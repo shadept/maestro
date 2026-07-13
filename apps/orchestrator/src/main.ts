@@ -192,10 +192,13 @@ const CallbackWorkerLive = Layer.effectDiscard(
 
 // Linear webhook ingestion (FUR-18): the Linear adapter maps deliveries into
 // the forge-agnostic pipeline (sessions/turns/queue). M2's generic REST API
-// plugs a second adapter into the same IngestPipeline.
+// plugs a second adapter into the same IngestPipeline. LinearCallback (same
+// layer reference as CallbackWorkerLive's — memoized to one instance) backs
+// the FUR-37 delegation lookup for session-less mentions.
 const IngestLive = LinearIngest.layer.pipe(
   Layer.provideMerge(IngestPipeline.layer),
   Layer.provide(SessionTerminatorLive),
+  Layer.provide(LinearCallback.layer),
 );
 
 // Health probes, the SSE firehose, the admin read API (FUR-16), the admin UI

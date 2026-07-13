@@ -1,11 +1,12 @@
 import { NodeHttpServer } from "@effect/platform-node";
-import type { Session } from "@maestro/domain";
+import type { Session, TaskRunId } from "@maestro/domain";
 import { sql } from "drizzle-orm";
 import { Effect, Layer, Option, Redacted, type Scope } from "effect";
 import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MAESTRO_COMMENT_MARKER } from "../../src/callback/format.ts";
+import { LinearCallback } from "../../src/callback/LinearCallback.ts";
 import { AppConfig } from "../../src/config/AppConfig.ts";
 import { AuditRepo } from "../../src/db/AuditRepo.ts";
 import { Db } from "../../src/db/Db.ts";
@@ -25,11 +26,35 @@ import { TurnQueue } from "../../src/queue/TurnQueue.ts";
 import { LINEAR_TEST_SECRET, loadLinearFixture, signLinearDelivery } from "../support/linear.ts";
 import { startTestDb, type TestDb } from "../support/pg.ts";
 
-// FUR-18: Linear webhook ingest, end to end over a real HTTP server, real
-// Postgres, and the real pg-boss TurnQueue — recorded fixtures only.
+// FUR-18/FUR-37: Linear webhook ingest, end to end over a real HTTP server,
+// real Postgres, and the real pg-boss TurnQueue — recorded fixtures only.
+// Trigger model under test is FUR-37's: issue delegation to the Maestro app
+// user starts work, @maestro mentions queue follow-up turns, plain comments
+// are inert, and the label trigger is gone (its tests are replaced below with
+// delegation equivalents, not deleted).
 
-const BOT_USER_ID = "b07b07b0-7b07-4b07-8b07-b07b07b07b07";
-const TICKET = "FUR-42";
+// The Maestro app user — matches issue-delegated.json's data.delegateId.
+const BOT_USER_ID = "eff9ea77-7653-46b1-b7e0-cd649140807b";
+const TICKET = "FUR-37";
+const TEAM = {
+  id: "6d81e504-6a8a-44f0-ae14-000191e67ac0",
+  key: "FUR",
+  name: "Furtado Interactive",
+};
+
+// Session-less mention targets, resolved via LinearCallback.layerTest's
+// seeded delegation lookups (comment webhooks carry no delegate).
+const ISSUE_DELEGATED_SESSIONLESS = "1efc90aa-0000-4000-8000-000000000090"; // FUR-90
+const ISSUE_NOT_DELEGATED = "1efc90aa-0000-4000-8000-000000000091"; // FUR-91
+const ISSUE_LOOKUP_FAILS = "1efc90aa-0000-4000-8000-000000000092"; // FUR-92, unseeded
+
+const DELEGATIONS = {
+  [ISSUE_DELEGATED_SESSIONLESS]: {
+    delegateId: BOT_USER_ID,
+    description: "Polish the operator handbook.",
+  },
+  [ISSUE_NOT_DELEGATED]: { delegateId: null, description: "Humans only." },
+};
 
 type Services = ProjectRepo | SessionRepo | TaskRunRepo | AuditRepo | HttpClient.HttpClient;
 
@@ -71,6 +96,7 @@ beforeAll(async () => {
     const ingest = LinearIngest.layer.pipe(
       Layer.provideMerge(IngestPipeline.layer),
       Layer.provide(terminator),
+      Layer.provide(LinearCallback.layerTest({ delegations: DELEGATIONS })),
     );
     return HttpRouter.serve(WebhookRoutes, { disableLogger: true, disableListenLog: true }).pipe(
       Layer.provideMerge(NodeHttpServer.layerTest),
@@ -115,15 +141,48 @@ const withData = (
   data: { ...(fixture.data as Record<string, unknown>), ...patch },
 });
 
-const activeSession = Effect.gen(function* () {
-  const sessions = yield* SessionRepo;
-  return yield* sessions.findActiveByTicket({ source: "linear", externalId: TICKET });
-});
+/** The delegation event, optionally retargeted at another ticket. */
+const delegationEvent = (patch: Record<string, unknown> = {}) =>
+  withData(loadLinearFixture("issue-delegated"), patch);
+
+/** A human comment on some issue (defaults to the delegated FUR-37 one). */
+const commentOn = (args: {
+  readonly body: string;
+  readonly identifier?: string;
+  readonly issueId?: string;
+  readonly title?: string;
+}) =>
+  withData(loadLinearFixture("comment-mention"), {
+    body: args.body,
+    ...(args.issueId !== undefined && { issueId: args.issueId }),
+    ...((args.identifier !== undefined || args.issueId !== undefined) && {
+      issue: {
+        id: args.issueId ?? "976f65f1-83e6-45d6-82a8-d10161e116bc",
+        identifier: args.identifier ?? TICKET,
+        title: args.title ?? "Fix the flux capacitor",
+        team: TEAM,
+      },
+    }),
+  });
+
+const activeSessionFor = (ticket: string) =>
+  Effect.gen(function* () {
+    const sessions = yield* SessionRepo;
+    return yield* sessions.findActiveByTicket({ source: "linear", externalId: ticket });
+  });
+
+const activeSession = activeSessionFor(TICKET);
 
 const runsOf = (session: Session) =>
   Effect.gen(function* () {
     const taskRuns = yield* TaskRunRepo;
     return yield* taskRuns.listBySession(session.id);
+  });
+
+const contextOf = (taskRunId: TaskRunId) =>
+  Effect.gen(function* () {
+    const taskRuns = yield* TaskRunRepo;
+    return yield* taskRuns.getContext(taskRunId);
   });
 
 const queuedJobs = async (): Promise<ReadonlyArray<{ id: string; group_id: string }>> => {
@@ -135,8 +194,8 @@ const queuedJobs = async (): Promise<ReadonlyArray<{ id: string; group_id: strin
 
 describe("POST /api/webhooks/linear", () => {
   it("rejects a tampered payload", async () => {
-    const delivery = signLinearDelivery(loadLinearFixture("issue-labeled"), {
-      tamper: (body) => body.replace("Fix the flux capacitor", "Do something evil"),
+    const delivery = signLinearDelivery(loadLinearFixture("issue-delegated"), {
+      tamper: (body) => body.replace("agent-delegation trigger", "something evil"),
     });
     const response = await run(post(delivery));
     expect(response.status).toBe(401);
@@ -144,7 +203,7 @@ describe("POST /api/webhooks/linear", () => {
   });
 
   it("rejects a delivery outside the replay window", async () => {
-    const delivery = signLinearDelivery(loadLinearFixture("issue-labeled"), {
+    const delivery = signLinearDelivery(loadLinearFixture("issue-delegated"), {
       webhookTimestamp: Date.now() - 10 * 60_000,
     });
     const response = await run(post(delivery));
@@ -152,12 +211,12 @@ describe("POST /api/webhooks/linear", () => {
   });
 
   it("rejects everything when no webhook secret is configured", async () => {
-    const delivery = signLinearDelivery(loadLinearFixture("issue-labeled"));
+    const delivery = signLinearDelivery(loadLinearFixture("issue-delegated"));
     const response = await run(post(delivery), layerWithoutSecret);
     expect(response.status).toBe(401);
   });
 
-  it("label event creates a session and queues the first turn", async () => {
+  it("delegating the issue to the Maestro app user creates a session and queues the first turn", async () => {
     await run(
       Effect.gen(function* () {
         const projects = yield* ProjectRepo;
@@ -168,7 +227,7 @@ describe("POST /api/webhooks/linear", () => {
       }),
     );
 
-    const delivery = signLinearDelivery(loadLinearFixture("issue-labeled"));
+    const delivery = signLinearDelivery(loadLinearFixture("issue-delegated"));
     const response = await run(post(delivery));
     expect(response.status).toBe(200);
     expect(response.json.outcome).toBe("SessionStarted");
@@ -181,16 +240,11 @@ describe("POST /api/webhooks/linear", () => {
     expect(runs).toHaveLength(1);
     expect(runs[0]?.state).toBe("PENDING");
 
-    const context = await run(
-      Effect.gen(function* () {
-        const taskRuns = yield* TaskRunRepo;
-        // biome-ignore lint/style/noNonNullAssertion: asserted one run above
-        return yield* taskRuns.getContext(runs[0]!.id);
-      }),
-    );
+    // biome-ignore lint/style/noNonNullAssertion: asserted one run above
+    const context = await run(contextOf(runs[0]!.id));
     expect(context.ticket).toEqual({ source: "linear", externalId: TICKET });
-    expect(context.title).toBe("Fix the flux capacitor");
-    expect(context.body).toContain("overheats above 88 mph");
+    expect(context.title).toBe("M2.17 — Linear agent-delegation trigger (spike-dependent)");
+    expect(context.body).toContain("native agent delegation");
     expect(context.actor).toBe("João Furtado");
     expect(context.deliveryId).toBe(delivery.deliveryId);
 
@@ -204,7 +258,7 @@ describe("POST /api/webhooks/linear", () => {
     const before = await run(runsOf(session));
 
     // Same delivery id as far as Linear is concerned — a redelivery.
-    const delivery = signLinearDelivery(loadLinearFixture("issue-labeled"), {
+    const delivery = signLinearDelivery(loadLinearFixture("issue-delegated"), {
       deliveryId: "d0d0d0d0-aaaa-4bbb-8ccc-eeeeeeeeeee1",
     });
     const first = await run(post(delivery));
@@ -217,8 +271,79 @@ describe("POST /api/webhooks/linear", () => {
     expect(after).toHaveLength(before.length);
   });
 
-  it("comment event queues turn 2, FIFO after turn 1", async () => {
-    const delivery = signLinearDelivery(loadLinearFixture("comment-created"));
+  it("a re-delivered delegation for an already-active ticket never double-triggers", async () => {
+    const session = Option.getOrThrow(await run(activeSession));
+    const before = await run(runsOf(session));
+
+    // Fresh delivery id, same delegation content — reshuffled webhook.
+    const response = await run(post(signLinearDelivery(loadLinearFixture("issue-delegated"))));
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("already active");
+    expect(await run(runsOf(session))).toHaveLength(before.length);
+  });
+
+  it("an issue update without a delegate change does not trigger (assignee changes included)", async () => {
+    // Captured shape: assigning the HUMAN carries assigneeId in updatedFrom
+    // while data.delegateId is still set — "still delegated" is not evidence.
+    const fixture = {
+      ...delegationEvent({ identifier: "FUR-550", id: "1efc90aa-0000-4000-8000-000000000550" }),
+      updatedFrom: { updatedAt: "2026-07-13T10:54:50.693Z", assigneeId: null },
+    };
+    const response = await run(post(signLinearDelivery(fixture)));
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("no delegation change");
+    expect(await run(activeSessionFor("FUR-550"))).toEqual(Option.none());
+  });
+
+  it("a delegation to a different agent user is ignored", async () => {
+    const fixture = delegationEvent({
+      identifier: "FUR-555",
+      id: "1efc90aa-0000-4000-8000-000000000555",
+      delegateId: "99999999-9999-4999-8999-999999999999",
+    });
+    const response = await run(post(signLinearDelivery(fixture)));
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+    expect(await run(activeSessionFor("FUR-555"))).toEqual(Option.none());
+  });
+
+  it("a delegation with no bot user id configured is loudly ignored", async () => {
+    const fixture = delegationEvent({
+      identifier: "FUR-556",
+      id: "1efc90aa-0000-4000-8000-000000000556",
+    });
+    const response = await run(post(signLinearDelivery(fixture)), layerWithoutBotUserId);
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("MAESTRO_LINEAR_BOT_USER_ID");
+    expect(await run(activeSessionFor("FUR-556"))).toEqual(Option.none());
+  });
+
+  it("a delegation for an unregistered team is ignored", async () => {
+    const fixture = delegationEvent({
+      identifier: "ZZZ-1",
+      id: "1efc90aa-0000-4000-8000-000000000999",
+      team: { ...TEAM, key: "ZZZ" },
+    });
+    const response = await run(post(signLinearDelivery(fixture)));
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+  });
+
+  it("the maestro trigger label no longer starts a session (FUR-37 replacement)", async () => {
+    // The old trigger, verbatim (label present + updatedFrom.labelIds): the
+    // label event must now be an inert issue update.
+    const response = await run(post(signLinearDelivery(loadLinearFixture("issue-labeled"))));
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("no delegation change");
+    expect(await run(activeSessionFor("FUR-42"))).toEqual(Option.none());
+  });
+
+  it("an @maestro mention queues turn 2 with the comment body as prompt, FIFO after turn 1", async () => {
+    const delivery = signLinearDelivery(loadLinearFixture("comment-mention"));
     const response = await run(post(delivery));
     expect(response.status).toBe(200);
     expect(response.json.outcome).toBe("TurnQueued");
@@ -231,68 +356,20 @@ describe("POST /api/webhooks/linear", () => {
     // biome-ignore lint/style/noNonNullAssertion: length asserted above
     expect(runs[0]!.id < runs[1]!.id).toBe(true);
 
-    const context = await run(
-      Effect.gen(function* () {
-        const taskRuns = yield* TaskRunRepo;
-        // biome-ignore lint/style/noNonNullAssertion: length asserted above
-        return yield* taskRuns.getContext(runs[1]!.id);
-      }),
-    );
+    // biome-ignore lint/style/noNonNullAssertion: length asserted above
+    const context = await run(contextOf(runs[1]!.id));
     expect(context.title).toBeNull();
-    expect(context.body).toBe("Also update the operator handbook, please.");
+    expect(context.body).toBe("@maestro test");
 
     const jobs = await queuedJobs();
     expect(jobs.map((job) => job.id)).toEqual(runs.map((r) => r.id));
     expect(new Set(jobs.map((job) => job.group_id))).toEqual(new Set([session.id]));
   });
 
-  it("Maestro's own comment does NOT queue a turn", async () => {
-    // Marker-free body so this exercises the bot-userId guard on its own.
-    const fixture = withData(loadLinearFixture("comment-created"), {
-      userId: BOT_USER_ID,
-      user: { id: BOT_USER_ID, name: "Maestro" },
-      body: "Turn completed.\n\nDone.",
-    });
-    const response = await run(post(signLinearDelivery(fixture)));
-    expect(response.status).toBe(200);
-    expect(response.json.outcome).toBe("Ignored");
-
-    const session = Option.getOrThrow(await run(activeSession));
-    expect(await run(runsOf(session))).toHaveLength(2);
-  });
-
-  it("a marker-prefixed comment does NOT queue a turn, whoever authored it (FUR-39)", async () => {
-    // Single-account setup: Maestro posts with the human's own API token, so
-    // the author id matches the human, not the configured bot id. The content
-    // marker must break the loop on its own.
-    const fixture = withData(loadLinearFixture("comment-created"), {
-      body: `${MAESTRO_COMMENT_MARKER} turn completed.\n\nDone.`,
-    });
-    const response = await run(post(signLinearDelivery(fixture)));
-    expect(response.status).toBe(200);
-    expect(response.json.outcome).toBe("Ignored");
-
-    const session = Option.getOrThrow(await run(activeSession));
-    expect(await run(runsOf(session))).toHaveLength(2);
-  });
-
-  it("a marker-prefixed comment does NOT queue a turn even with no bot user id configured (FUR-39)", async () => {
-    const fixture = withData(loadLinearFixture("comment-created"), {
-      body: `${MAESTRO_COMMENT_MARKER} turn failed (ERROR).\n\nBoom.`,
-    });
-    const response = await run(post(signLinearDelivery(fixture)), layerWithoutBotUserId);
-    expect(response.status).toBe(200);
-    expect(response.json.outcome).toBe("Ignored");
-
-    const session = Option.getOrThrow(await run(activeSession));
-    expect(await run(runsOf(session))).toHaveLength(2);
-  });
-
-  it("a genuine human comment still queues a turn when no bot user id is configured", async () => {
-    const fixture = withData(loadLinearFixture("comment-created"), {
-      body: "One more thing: bump the changelog.",
-    });
-    const response = await run(post(signLinearDelivery(fixture)), layerWithoutBotUserId);
+  it("mention matching is case-insensitive", async () => {
+    const response = await run(
+      post(signLinearDelivery(commentOn({ body: "@MAESTRO also bump the changelog" }))),
+    );
     expect(response.status).toBe(200);
     expect(response.json.outcome).toBe("TurnQueued");
 
@@ -300,93 +377,224 @@ describe("POST /api/webhooks/linear", () => {
     expect(await run(runsOf(session))).toHaveLength(3);
   });
 
-  it("a comment on an untriggered issue is ignored", async () => {
-    const fixture = withData(loadLinearFixture("comment-created"), {
-      issue: {
-        id: "11111111-2222-4333-8444-555555555555",
-        identifier: "FUR-777",
-        title: "Never labeled",
-      },
+  it("a plain human comment on an active session queues NOTHING (deliberate FUR-37 change)", async () => {
+    const response = await run(
+      post(signLinearDelivery(commentOn({ body: "Nice work so far, reviewing tomorrow." }))),
+    );
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("plain comment");
+
+    const session = Option.getOrThrow(await run(activeSession));
+    expect(await run(runsOf(session))).toHaveLength(3);
+  });
+
+  it("handle lookalikes are not mentions (word boundaries)", async () => {
+    for (const body of ["reach me at ops@maestro.dev", "@maestrofoo take note", "@maestro-bot?"]) {
+      const response = await run(post(signLinearDelivery(commentOn({ body }))));
+      expect(response.status).toBe(200);
+      expect(response.json.outcome).toBe("Ignored");
+    }
+    const session = Option.getOrThrow(await run(activeSession));
+    expect(await run(runsOf(session))).toHaveLength(3);
+  });
+
+  it("Maestro's own marker comment does NOT queue a turn even when it contains @maestro", async () => {
+    // The paused-session message literally tells humans to "mention
+    // @maestro" — the marker guard must run BEFORE mention detection.
+    const response = await run(
+      post(
+        signLinearDelivery(
+          commentOn({ body: `${MAESTRO_COMMENT_MARKER} mention @maestro in a comment to resume.` }),
+        ),
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("marker");
+
+    const session = Option.getOrThrow(await run(activeSession));
+    expect(await run(runsOf(session))).toHaveLength(3);
+  });
+
+  it("a bot-authored comment does NOT queue a turn even when it contains @maestro", async () => {
+    // Marker-free body so this exercises the bot-userId guard on its own,
+    // ordered before mention handling.
+    const fixture = withData(commentOn({ body: "Working on it (@maestro will report back)." }), {
+      userId: BOT_USER_ID,
+      user: { id: BOT_USER_ID, name: "Maestro" },
     });
     const response = await run(post(signLinearDelivery(fixture)));
     expect(response.status).toBe(200);
     expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("bot user");
+
+    const session = Option.getOrThrow(await run(activeSession));
+    expect(await run(runsOf(session))).toHaveLength(3);
   });
 
-  it("a label event for an unregistered team is ignored", async () => {
-    const fixture = loadLinearFixture("issue-labeled");
-    const data = fixture.data as Record<string, unknown>;
-    const patched = withData(fixture, {
-      identifier: "ZZZ-1",
-      team: { ...(data.team as Record<string, unknown>), key: "ZZZ" },
-    });
-    const response = await run(post(signLinearDelivery(patched)));
+  it("a mention on an active session still queues a turn when no bot user id is configured", async () => {
+    const response = await run(
+      post(signLinearDelivery(commentOn({ body: "@maestro one more thing: run the linter" }))),
+      layerWithoutBotUserId,
+    );
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("TurnQueued");
+
+    const session = Option.getOrThrow(await run(activeSession));
+    expect(await run(runsOf(session))).toHaveLength(4);
+  });
+
+  it("a mention on a delegated but session-less issue starts a session with the comment as first-turn context", async () => {
+    const response = await run(
+      post(
+        signLinearDelivery(
+          commentOn({
+            body: "@maestro please get on it",
+            identifier: "FUR-90",
+            issueId: ISSUE_DELEGATED_SESSIONLESS,
+            title: "Polish the handbook",
+          }),
+        ),
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("SessionStarted");
+
+    const session = Option.getOrThrow(await run(activeSessionFor("FUR-90")));
+    const runs = await run(runsOf(session));
+    expect(runs).toHaveLength(1);
+
+    // FIRST-TURN COMPOSITION (documented in LinearIngest): issue description
+    // first, summoning comment appended under a divider.
+    // biome-ignore lint/style/noNonNullAssertion: length asserted above
+    const context = await run(contextOf(runs[0]!.id));
+    expect(context.title).toBe("Polish the handbook");
+    expect(context.body).toContain("Polish the operator handbook.");
+    expect(context.body).toContain("@maestro please get on it");
+    expect(context.body.indexOf("Polish the operator handbook.")).toBeLessThan(
+      context.body.indexOf("@maestro please get on it"),
+    );
+  });
+
+  it("a mention on a non-delegated session-less issue is ignored", async () => {
+    const response = await run(
+      post(
+        signLinearDelivery(
+          commentOn({
+            body: "@maestro can you take this?",
+            identifier: "FUR-91",
+            issueId: ISSUE_NOT_DELEGATED,
+          }),
+        ),
+      ),
+    );
     expect(response.status).toBe(200);
     expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("not delegated");
+    expect(await run(activeSessionFor("FUR-91"))).toEqual(Option.none());
   });
 
-  it("a paused session ignores genuine human comments until the label resumes it (FUR-39)", async () => {
+  it("a session-less mention whose delegation lookup fails is ignored, not an error", async () => {
+    const response = await run(
+      post(
+        signLinearDelivery(
+          commentOn({
+            body: "@maestro hello?",
+            identifier: "FUR-92",
+            issueId: ISSUE_LOOKUP_FAILS,
+          }),
+        ),
+      ),
+    );
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("could not verify delegation");
+    expect(await run(activeSessionFor("FUR-92"))).toEqual(Option.none());
+  });
+
+  it("a session-less mention with no bot user id configured is loudly ignored", async () => {
+    const response = await run(
+      post(
+        signLinearDelivery(
+          commentOn({
+            body: "@maestro anyone home?",
+            identifier: "FUR-93",
+            issueId: "1efc90aa-0000-4000-8000-000000000093",
+          }),
+        ),
+      ),
+      layerWithoutBotUserId,
+    );
+    expect(response.status).toBe(200);
+    expect(response.json.outcome).toBe("Ignored");
+    expect(String(response.json.reason)).toContain("MAESTRO_LINEAR_BOT_USER_ID");
+  });
+
+  it("a paused session resumes via mention or re-delegation, never via inert events (FUR-39)", async () => {
     // Fresh ticket on the registered team; pause is set directly (the breaker
     // trip itself is executor territory — see the circuit-breaker suite).
     const TICKET_P = "FUR-88";
-    const label = withData(loadLinearFixture("issue-labeled"), { identifier: TICKET_P });
-    const started = await run(post(signLinearDelivery(label)));
+    const ISSUE_P = "1efc90aa-0000-4000-8000-000000000088";
+    const started = await run(
+      post(signLinearDelivery(delegationEvent({ identifier: TICKET_P, id: ISSUE_P }))),
+    );
     expect(started.json.outcome).toBe("SessionStarted");
 
-    const paused = await run(
-      Effect.gen(function* () {
-        const sessions = yield* SessionRepo;
-        const session = Option.getOrThrow(
-          yield* sessions.findActiveByTicket({ source: "linear", externalId: TICKET_P }),
-        );
-        return yield* sessions.pause(session.id);
-      }),
-    );
+    const pauseIt = Effect.gen(function* () {
+      const sessions = yield* SessionRepo;
+      const session = Option.getOrThrow(
+        yield* sessions.findActiveByTicket({ source: "linear", externalId: TICKET_P }),
+      );
+      return yield* sessions.pause(session.id);
+    });
+    const paused = await run(pauseIt);
     expect(paused.newlyPaused).toBe(true);
     const session = paused.session;
 
-    // a genuine human comment (no marker, no bot id) does NOT queue a turn
-    const comment = withData(loadLinearFixture("comment-created"), {
-      body: "Any progress?",
-      issue: {
-        id: "9a3b5f80-1e2a-4b0e-9f3d-2c7a8f1e6b01",
-        identifier: TICKET_P,
-        title: "Fix the flux capacitor",
-      },
-    });
-    const ignored = await run(post(signLinearDelivery(comment)), layerWithoutBotUserId);
-    expect(ignored.status).toBe(200);
-    expect(ignored.json.outcome).toBe("Ignored");
-    expect(String(ignored.json.reason)).toContain("paused");
+    // a plain human comment stays inert (it never even reaches the pipeline)
+    const inert = await run(
+      post(
+        signLinearDelivery(
+          commentOn({ body: "Any progress?", identifier: TICKET_P, issueId: ISSUE_P }),
+        ),
+      ),
+    );
+    expect(inert.status).toBe(200);
+    expect(inert.json.outcome).toBe("Ignored");
     expect(await run(runsOf(session))).toHaveLength(1);
 
-    // an issue update whose label set did NOT change must not silently resume
+    // an issue update without a delegate change must not silently resume
     const unrelatedUpdate = {
-      ...withData(loadLinearFixture("issue-labeled"), { identifier: TICKET_P }),
-      updatedFrom: { updatedAt: "2026-07-10T11:59:00.000Z", title: "Old title" },
+      ...delegationEvent({ identifier: TICKET_P, id: ISSUE_P }),
+      updatedFrom: { updatedAt: "2026-07-13T10:59:00.000Z", title: "Old title" },
     };
     const noResume = await run(post(signLinearDelivery(unrelatedUpdate)));
     expect(noResume.status).toBe(200);
     expect(noResume.json.outcome).toBe("Ignored");
     expect(await run(runsOf(session))).toHaveLength(1);
 
-    // re-applying the trigger label (updatedFrom carries labelIds) resumes
-    // the session and queues a fresh turn from the ticket
-    const relabel = withData(loadLinearFixture("issue-labeled"), { identifier: TICKET_P });
-    const resumed = await run(post(signLinearDelivery(relabel)));
-    expect(resumed.status).toBe(200);
-    expect(resumed.json.outcome).toBe("SessionResumed");
+    // an explicit @maestro mention resumes the session and queues the turn
+    const mentioned = await run(
+      post(
+        signLinearDelivery(
+          commentOn({ body: "@maestro try again", identifier: TICKET_P, issueId: ISSUE_P }),
+        ),
+      ),
+    );
+    expect(mentioned.status).toBe(200);
+    expect(mentioned.json.outcome).toBe("SessionResumed");
 
-    const after = await run(
+    const afterMention = await run(
       Effect.gen(function* () {
         const sessions = yield* SessionRepo;
         return yield* sessions.get(session.id);
       }),
     );
-    expect(after.pausedAt).toBeNull();
-    const runs = await run(runsOf(session));
-    expect(runs).toHaveLength(2);
-    expect(runs[1]?.state).toBe("PENDING");
+    expect(afterMention.pausedAt).toBeNull();
+    const runsAfterMention = await run(runsOf(session));
+    expect(runsAfterMention).toHaveLength(2);
+    expect(runsAfterMention[1]?.state).toBe("PENDING");
 
     // the human action is audited
     const audits = await run(
@@ -401,33 +609,32 @@ describe("POST /api/webhooks/linear", () => {
       ),
     ).toBe(true);
 
-    // ...and the resumed session accepts comments again
-    const followUp = withData(loadLinearFixture("comment-created"), {
-      body: "Welcome back.",
-      issue: {
-        id: "9a3b5f80-1e2a-4b0e-9f3d-2c7a8f1e6b01",
-        identifier: TICKET_P,
-        title: "Fix the flux capacitor",
-      },
-    });
-    const queued = await run(post(signLinearDelivery(followUp)));
-    expect(queued.json.outcome).toBe("TurnQueued");
+    // ...and re-delegating the issue (un-delegate first — updatedFrom must
+    // show the delegate changed) resumes a paused session too.
+    const repaused = await run(pauseIt);
+    expect(repaused.newlyPaused).toBe(true);
+    const redelegated = await run(
+      post(signLinearDelivery(delegationEvent({ identifier: TICKET_P, id: ISSUE_P }))),
+    );
+    expect(redelegated.status).toBe(200);
+    expect(redelegated.json.outcome).toBe("SessionResumed");
     expect(await run(runsOf(session))).toHaveLength(3);
   });
 
   // Task-level `maestro:model=`/`maestro:effort=` labels (FUR-41) were removed
   // as YAGNI — but issues in the wild may still carry them, so they must stay
   // inert: ordinary labels that neither trigger, fail, nor configure anything.
-  it("leftover agent-override-shaped labels are inert ordinary labels", async () => {
-    const TICKET_M = "FUR-91";
+  it("leftover agent-override-shaped labels on a delegated issue are inert ordinary labels", async () => {
+    const TICKET_M = "FUR-95";
     const label = (name: string, n: number) => ({
       id: `cd1e7f3a-2b8c-4a9d-b5e6-0f4a7c1d8e${n}0`,
       color: "#5e6ad2",
       name,
       parentId: null,
     });
-    const fixture = withData(loadLinearFixture("issue-labeled"), {
+    const fixture = delegationEvent({
       identifier: TICKET_M,
+      id: "1efc90aa-0000-4000-8000-000000000095",
       labels: [
         label("maestro", 1),
         label("maestro:model=claude-sonnet-4-5", 2),
@@ -438,14 +645,7 @@ describe("POST /api/webhooks/linear", () => {
     expect(started.status).toBe(200);
     expect(started.json.outcome).toBe("SessionStarted");
 
-    const session = Option.getOrThrow(
-      await run(
-        Effect.gen(function* () {
-          const sessions = yield* SessionRepo;
-          return yield* sessions.findActiveByTicket({ source: "linear", externalId: TICKET_M });
-        }),
-      ),
-    );
+    const session = Option.getOrThrow(await run(activeSessionFor(TICKET_M)));
     // nothing was parsed off the labels onto the session
     expect(session.agentModel).toBeNull();
     expect(session.agentEffort).toBeNull();
@@ -456,7 +656,8 @@ describe("POST /api/webhooks/linear", () => {
     // FUR-19: the terminal signal is acted on, so capture the session first.
     const session = Option.getOrThrow(await run(activeSession));
 
-    const response = await run(post(signLinearDelivery(loadLinearFixture("issue-completed"))));
+    const done = withData(loadLinearFixture("issue-completed"), { identifier: TICKET });
+    const response = await run(post(signLinearDelivery(done)));
     expect(response.status).toBe(200);
     expect(response.json.outcome).toBe("TerminalRecorded");
 
@@ -473,7 +674,7 @@ describe("POST /api/webhooks/linear", () => {
 
     // all queued (PENDING) turns were cancelled — nothing was executing
     const runs = await run(runsOf(session));
-    expect(runs).toHaveLength(3);
+    expect(runs).toHaveLength(4);
     for (const taskRun of runs) {
       expect(taskRun.state).toBe("FAILED");
       expect(taskRun.cause).toBe("CANCELLED");
@@ -491,7 +692,8 @@ describe("POST /api/webhooks/linear", () => {
   });
 
   it("a second terminal delivery for the same ticket is a no-op (double-close)", async () => {
-    const response = await run(post(signLinearDelivery(loadLinearFixture("issue-completed"))));
+    const done = withData(loadLinearFixture("issue-completed"), { identifier: TICKET });
+    const response = await run(post(signLinearDelivery(done)));
     expect(response.status).toBe(200);
     // no active session anymore — the signal has nothing to act on
     expect(response.json.outcome).toBe("Ignored");
@@ -501,8 +703,13 @@ describe("POST /api/webhooks/linear", () => {
   it("issue moved to canceled terminates its session too", async () => {
     // fresh session on a different ticket of the registered team
     const TICKET_2 = "FUR-77";
-    const labelFixture = withData(loadLinearFixture("issue-labeled"), { identifier: TICKET_2 });
-    const started = await run(post(signLinearDelivery(labelFixture)));
+    const started = await run(
+      post(
+        signLinearDelivery(
+          delegationEvent({ identifier: TICKET_2, id: "1efc90aa-0000-4000-8000-000000000077" }),
+        ),
+      ),
+    );
     expect(started.json.outcome).toBe("SessionStarted");
 
     const fixture = loadLinearFixture("issue-completed");
@@ -515,12 +722,7 @@ describe("POST /api/webhooks/linear", () => {
     expect(response.status).toBe(200);
     expect(response.json.outcome).toBe("TerminalRecorded");
 
-    const terminated = await run(
-      Effect.gen(function* () {
-        const sessions = yield* SessionRepo;
-        return yield* sessions.findActiveByTicket({ source: "linear", externalId: TICKET_2 });
-      }),
-    );
+    const terminated = await run(activeSessionFor(TICKET_2));
     expect(terminated).toEqual(Option.none());
 
     const audits = await run(

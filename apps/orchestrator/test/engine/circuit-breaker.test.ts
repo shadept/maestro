@@ -9,6 +9,7 @@ import { HttpBody, HttpClient, HttpRouter } from "effect/unstable/http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { AgentContract } from "../../src/agent/AgentContract.ts";
 import { MAESTRO_COMMENT_MARKER } from "../../src/callback/format.ts";
+import { LinearCallback } from "../../src/callback/LinearCallback.ts";
 import { AppConfig } from "../../src/config/AppConfig.ts";
 import { AuditRepo } from "../../src/db/AuditRepo.ts";
 import { Db } from "../../src/db/Db.ts";
@@ -46,14 +47,16 @@ import { startTestDb, type TestDb } from "../support/pg.ts";
 
 // FUR-39 layers 2+3, end to end on the REAL path: webhook HTTP → LinearIngest
 // → IngestPipeline → pg-boss queue → TurnExecutor → fake agent (MODE=FAIL) →
-// circuit breaker. No live API calls anywhere. This is the acceptance walk:
-// N instantly-failing turns trip the breaker (paused outbox message + audit
-// entry, failure comments deduped), a genuine human comment is then Ignored
-// even with NO bot user id configured, and re-applying the trigger label
-// resumes the session and queues a turn again.
+// circuit breaker. No live API calls anywhere. This is the acceptance walk
+// (resume mechanism migrated by FUR-37): N instantly-failing turns trip the
+// breaker (paused outbox message + audit entry, failure comments deduped),
+// Maestro's own comment echo and plain human comments stay inert, and an
+// explicit @maestro mention resumes the session and queues a turn again.
 
 const TICKET = "FUR-300";
 const ISSUE_UUID = "9a3b5f80-1e2a-4b0e-9f3d-2c7a8f1e6b01";
+// The Maestro app user — matches issue-delegated.json's data.delegateId.
+const BOT_USER_ID = "eff9ea77-7653-46b1-b7e0-cd649140807b";
 
 type Services =
   | TurnExecutor
@@ -117,14 +120,19 @@ const withData = (
   data: { ...(fixture.data as Record<string, unknown>), ...patch },
 });
 
-/** The label-trigger event for our ticket; description drives the fake agent into failure. */
-const labelEvent = () =>
-  withData(loadLinearFixture("issue-labeled"), { identifier: TICKET, description: "MODE=FAIL" });
+/** The delegation trigger for our ticket; description drives the fake agent into failure. */
+const delegationEvent = () =>
+  withData(loadLinearFixture("issue-delegated"), {
+    identifier: TICKET,
+    id: ISSUE_UUID,
+    description: "MODE=FAIL",
+  });
 
 /** A human comment on our ticket. */
 const commentEvent = (body: string) =>
-  withData(loadLinearFixture("comment-created"), {
+  withData(loadLinearFixture("comment-mention"), {
     body,
+    issueId: ISSUE_UUID,
     issue: { id: ISSUE_UUID, identifier: TICKET, title: "Fix the flux capacitor" },
   });
 
@@ -196,6 +204,9 @@ beforeAll(async () => {
   const ingest = LinearIngest.layer.pipe(
     Layer.provideMerge(IngestPipeline.layer),
     Layer.provide(terminator),
+    // No delegation lookups happen in this suite (mentions always land on an
+    // active session), so the fake needs no seeded delegations.
+    Layer.provide(LinearCallback.layerTest({})),
   );
   const http = HttpRouter.serve(WebhookRoutes, {
     disableLogger: true,
@@ -216,9 +227,10 @@ beforeAll(async () => {
         turnTimeoutSeconds: 120,
         maxConcurrentWorkers: 2,
         linearWebhookSecret: Option.some(Redacted.make(LINEAR_TEST_SECRET)),
-        // ACCEPTANCE: no bot user id configured — the breaker alone must cap
-        // a failing session at CONSECUTIVE_FAILURE_LIMIT failed turns.
-        linearBotUserId: Option.none(),
+        // The delegation trigger needs the app user id (FUR-37). The layer-1
+        // marker guard is still what stops the echo below: every comment in
+        // this suite is authored by the HUMAN user id, never the bot's.
+        linearBotUserId: Option.some(BOT_USER_ID),
       }),
     ),
     Layer.orDie,
@@ -232,7 +244,7 @@ afterAll(async () => {
 });
 
 describe("failure circuit breaker (FUR-39)", () => {
-  it("N failures pause the session; comments are ignored until the label resumes it", async () => {
+  it("N failures pause the session; nothing triggers until an @maestro mention resumes it", async () => {
     await run(
       Effect.gen(function* () {
         const projectRepo = yield* ProjectRepo;
@@ -246,7 +258,7 @@ describe("failure circuit breaker (FUR-39)", () => {
         yield* queue.work(executor.execute);
 
         // ── trip: N instantly-failing turns through the real path ─────────
-        const started = yield* post(signLinearDelivery(labelEvent()));
+        const started = yield* post(signLinearDelivery(delegationEvent()));
         expect(started.status).toBe(200);
         expect(started.json.outcome).toBe("SessionStarted");
 
@@ -267,7 +279,7 @@ describe("failure circuit breaker (FUR-39)", () => {
 
         for (let turn = 2; turn <= CONSECUTIVE_FAILURE_LIMIT; turn += 1) {
           const queued = yield* post(
-            signLinearDelivery(commentEvent(`Try again please. MODE=FAIL (${turn})`)),
+            signLinearDelivery(commentEvent(`@maestro try again please. MODE=FAIL (${turn})`)),
           );
           expect(queued.json.outcome).toBe("TurnQueued");
           yield* settledFailures(turn);
@@ -296,6 +308,8 @@ describe("failure circuit breaker (FUR-39)", () => {
         expect(outbox.paused[0]?.summary).toContain(
           `Paused this session after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures`,
         );
+        // the paused message names the FUR-37 resume mechanism
+        expect(outbox.paused[0]?.summary).toContain("mention @maestro");
         expect(outbox.failed).toHaveLength(1); // 3 failures, identical text, one comment
         expect(outbox.failed[0]?.summary).toBe("fake agent exploded");
 
@@ -307,19 +321,24 @@ describe("failure circuit breaker (FUR-39)", () => {
         ).toHaveLength(1);
 
         // ── paused: nothing auto-triggers turns any more ───────────────────
-        // Maestro's own comment echo (layer 1 guard — marker, any author):
+        // Maestro's own comment echo (layer 1 guard — marker, any author;
+        // note it even CONTAINS "@maestro" — the paused message tells humans
+        // to mention it — so the marker guard must outrank mention handling):
         const echo = yield* post(
-          signLinearDelivery(commentEvent(`${MAESTRO_COMMENT_MARKER} turn failed (ERROR).`)),
+          signLinearDelivery(commentEvent(`${MAESTRO_COMMENT_MARKER} mention @maestro to resume.`)),
         );
         expect(echo.json.outcome).toBe("Ignored");
-        // and a GENUINE human comment, with no bot user id configured:
+        // and a GENUINE human comment without a mention is inert (FUR-37):
         const human = yield* post(signLinearDelivery(commentEvent("Are you stuck?")));
         expect(human.json.outcome).toBe("Ignored");
-        expect(String(human.json.reason)).toContain("paused");
         expect(yield* sessionRuns(session.id)).toHaveLength(CONSECUTIVE_FAILURE_LIMIT);
 
-        // ── manual resume: the human re-applies the trigger label ─────────
-        const resumed = yield* post(signLinearDelivery(labelEvent()));
+        // ── manual resume: the human mentions @maestro (FUR-37 mechanism) ──
+        // (the mention body drives the resumed turn — still MODE=FAIL, so the
+        // post-resume failure below re-trips the breaker)
+        const resumed = yield* post(
+          signLinearDelivery(commentEvent("@maestro please try once more. MODE=FAIL")),
+        );
         expect(resumed.json.outcome).toBe("SessionResumed");
         expect((yield* getSession(session.id)).pausedAt).toBeNull();
 

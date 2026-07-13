@@ -64,13 +64,21 @@ const config = {
   linearTokenKind: Config.option(
     Config.literals(["api-key", "oauth"], "MAESTRO_LINEAR_TOKEN_KIND"),
   ),
-  /** Label that hands a Linear issue to Maestro (label-trigger model, FUR-18). */
-  linearTriggerLabel: Config.nonEmptyString("MAESTRO_LINEAR_TRIGGER_LABEL").pipe(
+  /**
+   * The @handle that summons Maestro in ticket comments (FUR-37). Must match
+   * the Maestro OAuth app's name/handle in Linear — Linear renders app
+   * mentions as plain `@<handle>` markdown in webhook comment bodies, so the
+   * handle string is the only mention evidence deliveries carry.
+   */
+  linearMentionHandle: Config.nonEmptyString("MAESTRO_LINEAR_MENTION_HANDLE").pipe(
     Config.withDefault("maestro"),
   ),
   /**
-   * Linear user id of the account MAESTRO_LINEAR_API_TOKEN belongs to —
-   * the self-trigger guard: comments by this user never queue turns.
+   * Linear user id of the Maestro app user (the identity behind
+   * MAESTRO_LINEAR_API_TOKEN). Load-bearing since FUR-37: delegating an issue
+   * to this user is THE trigger, so without it delegation events are Ignored
+   * (loudly logged) — and it still guards against self-triggering on
+   * Maestro's own comments. Optional at boot by policy; unset = no triggering.
    */
   linearBotUserId: Config.option(Config.nonEmptyString("MAESTRO_LINEAR_BOT_USER_ID")),
   /** Subscription session token (preferred) — see Tech Requirements §9. */
@@ -115,7 +123,7 @@ export class AppConfig extends Context.Service<
     readonly linearWebhookSecret: Option.Option<Redacted.Redacted>;
     readonly linearApiToken: Option.Option<Redacted.Redacted>;
     readonly linearTokenKind: Option.Option<"api-key" | "oauth">;
-    readonly linearTriggerLabel: string;
+    readonly linearMentionHandle: string;
     readonly linearBotUserId: Option.Option<string>;
     readonly agentOauthToken: Option.Option<Redacted.Redacted>;
     readonly agentApiKey: Option.Option<Redacted.Redacted>;
@@ -147,7 +155,7 @@ export class AppConfig extends Context.Service<
       linearWebhookSecret: Option.none(),
       linearApiToken: Option.none(),
       linearTokenKind: Option.none(),
-      linearTriggerLabel: "maestro",
+      linearMentionHandle: "maestro",
       linearBotUserId: Option.none(),
       agentOauthToken: Option.none(),
       agentApiKey: Option.none(),

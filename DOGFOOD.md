@@ -46,8 +46,21 @@ Also confirm in `.env`:
 - `MAESTRO_WORKER_IMAGE=maestro/worker-base:m1` (rebuild any time with
   `docker build -t maestro/worker-base:m1 images/base`).
 
-Create the trigger label in Linear: team **FUR** → labels → add `maestro`
-(or set `MAESTRO_LINEAR_TRIGGER_LABEL` to an existing label).
+### Triggering (FUR-37: delegation + mentions, no more label)
+
+- **Start work:** delegate the issue to the **Maestro** app user — in Linear's
+  assignee picker, pick the Maestro agent (Linear then sets *you* as assignee
+  and Maestro as *delegate*; the delegate change is the trigger). Requires the
+  FUR-42 OAuth app minted with `app:assignable` + `app:mentionable` scopes and
+  `MAESTRO_LINEAR_BOT_USER_ID` set to the app's user id — delegation events
+  are ignored (with a warning in the logs) while it is unset.
+- **Follow-up turn:** comment `@maestro <instruction>` on the issue. The
+  comment body is the turn's prompt. Set `MAESTRO_LINEAR_MENTION_HANDLE` if
+  your app's handle isn't `maestro`. A mention on a delegated issue that has
+  no session yet starts one (issue description + comment become the first
+  prompt); a mention on a non-delegated, session-less issue is ignored.
+- **Plain comments never trigger turns** (deliberate FUR-37 change — humans
+  can discuss on the ticket without waking Maestro).
 
 ### Posting as the Maestro app identity (FUR-42)
 
@@ -204,16 +217,18 @@ open question needs. Fallback: set `ANTHROPIC_API_KEY` instead.
   `pnpm --filter @maestro/orchestrator register-project --repo-git-url https://github.com/shadept/maestro --linear-team-key FUR --base-branch main`
 - Turn FAILED with "publishing failed": `MAESTRO_GITHUB_TOKEN` missing or
   under-scoped. The commit is preserved in the worktree; fix the token and
-  comment on the ticket to trigger a follow-up turn.
+  comment `@maestro <instruction>` on the ticket to trigger a follow-up turn.
 - Result comment never lands but the PR exists: `MAESTRO_LINEAR_API_TOKEN`
   missing/invalid — the outbox retries with backoff, so fixing the token and
   restarting delivers the pending comment.
 - "**Maestro** — Paused this session after 3 consecutive failures" comment
-  (FUR-39 circuit breaker): the session stops accepting comment-triggered
+  (FUR-39 circuit breaker): the session stops accepting auto-triggered
   turns after 3 consecutive FAILED turns with no success in between.
-  Diagnose via the failure comment / run logs, then resume by RE-APPLYING
-  the trigger label to the issue (remove `maestro`, add it back) — that
-  clears the breaker and queues a fresh turn from the ticket. One more
+  Diagnose via the failure comment / run logs, then resume by mentioning
+  `@maestro` in a comment (the comment body becomes the resumed turn's
+  prompt) — or by un-delegating and re-delegating the issue to Maestro,
+  which queues a fresh turn from the ticket instead. Either one
+  clears the breaker. One more
   failure right after a resume re-pauses immediately; only a completed turn
   resets the streak. Repeated identical failure comments are deduped: the
   same failure text posts once per session until the text changes.

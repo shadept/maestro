@@ -54,15 +54,16 @@ export class IngestPipeline extends Context.Service<
   IngestPipeline,
   {
     /**
-     * A ticket was handed to Maestro (Linear: trigger label present). Creates
-     * the session and its first turn; an already-active session makes this a
-     * no-op so replayed/reshuffled label events never double-trigger.
+     * A ticket was handed to Maestro (Linear: issue delegated to the Maestro
+     * app user, FUR-37). Creates the session and its first turn; an
+     * already-active session makes this a no-op so replayed/reshuffled
+     * delegation events never double-trigger.
      *
-     * `resumeSignal` marks an explicit human (re-)trigger — Linear: the label
-     * set actually changed on the event, not merely "label still present on
-     * some issue update". On a session the failure circuit breaker paused
-     * (FUR-39), a resume signal clears the breaker and queues a fresh turn;
-     * without it a paused session stays paused.
+     * `resumeSignal` marks an explicit human (re-)trigger — Linear: the
+     * delegate actually changed on the event (updatedFrom evidence), not
+     * merely "still delegated on some issue update". On a session the failure
+     * circuit breaker paused (FUR-39), a resume signal clears the breaker and
+     * queues a fresh turn; without it a paused session stays paused.
      */
     readonly startTask: (args: {
       readonly project: Project;
@@ -70,11 +71,26 @@ export class IngestPipeline extends Context.Service<
       readonly resumeSignal?: boolean;
     }) => Effect.Effect<IngestOutcome, IngestPipelineError>;
     /**
-     * A follow-up (Linear: new comment on a triggered issue) — one more turn
-     * on the ticket's active session. No session = not a Maestro ticket.
+     * Whether the ticket has an active (non-terminated) session — the branch
+     * point for platform adapters whose follow-up signal can also start work
+     * (Linear: a mention on a session-less-but-delegated issue starts a
+     * session instead of queueing a turn, FUR-37).
+     */
+    readonly hasActiveSession: (
+      ticket: TicketReference,
+    ) => Effect.Effect<boolean, IngestPipelineError>;
+    /**
+     * A follow-up (Linear: @maestro mention on a worked issue) — one more
+     * turn on the ticket's active session. No session = not a Maestro ticket.
+     *
+     * `resumeSignal` marks an explicit human summon (Linear: every mention
+     * is one — plain comments never reach the pipeline since FUR-37): on a
+     * breaker-paused session it clears the breaker and queues the turn
+     * (SessionResumed); without it a paused session ignores the event.
      */
     readonly queueTurn: (args: {
       readonly context: TaskContext;
+      readonly resumeSignal?: boolean;
     }) => Effect.Effect<IngestOutcome, IngestPipelineError>;
     /**
      * The ticket reached a terminal platform state (done/canceled) — the
@@ -107,21 +123,28 @@ export class IngestPipeline extends Context.Service<
           return taskRun;
         });
 
+      /** Clears the FUR-39 breaker on an explicit human resume signal. */
+      const resume = (sessionId: SessionId, actor: string) =>
+        Effect.gen(function* () {
+          yield* sessionRepo.resume(sessionId);
+          yield* auditRepo.record({
+            actor,
+            action: "session-resumed",
+            targetEntity: `session:${sessionId}`,
+          });
+        });
+
       return {
         startTask: Effect.fn("IngestPipeline.startTask")(function* (args) {
           const existing = yield* sessionRepo.findActiveByTicket(args.context.ticket);
           if (Option.isSome(existing)) {
             const session = existing.value;
             if (session.pausedAt !== null && args.resumeSignal === true) {
-              // Manual resume (FUR-39): the human re-applied the trigger
-              // label to a breaker-paused session. Clear the breaker, audit
-              // the human action, and queue a fresh turn from the ticket.
-              yield* sessionRepo.resume(session.id);
-              yield* auditRepo.record({
-                actor: args.context.actor,
-                action: "session-resumed",
-                targetEntity: `session:${session.id}`,
-              });
+              // Manual resume (FUR-39, mechanism migrated by FUR-37): the
+              // human re-delegated a breaker-paused session's issue to
+              // Maestro. Clear the breaker, audit the human action, and
+              // queue a fresh turn from the ticket.
+              yield* resume(session.id, args.context.actor);
               const taskRun = yield* createTurn(session.id, args.context);
               return {
                 _tag: "SessionResumed",
@@ -146,6 +169,9 @@ export class IngestPipeline extends Context.Service<
             taskRunId: taskRun.id,
           } satisfies IngestOutcome;
         }),
+        hasActiveSession: Effect.fn("IngestPipeline.hasActiveSession")(function* (ticket) {
+          return Option.isSome(yield* sessionRepo.findActiveByTicket(ticket));
+        }),
         queueTurn: Effect.fn("IngestPipeline.queueTurn")(function* (args) {
           const session = yield* sessionRepo.findActiveByTicket(args.context.ticket);
           if (Option.isNone(session)) {
@@ -154,15 +180,24 @@ export class IngestPipeline extends Context.Service<
               reason: `no active session for ${args.context.ticket.externalId}`,
             } satisfies IngestOutcome;
           }
-          // Circuit breaker (FUR-39): a paused session accepts no
-          // auto-triggered turns — not even from genuine human comments —
-          // until a human resumes it via the trigger label.
           if (session.value.pausedAt !== null) {
+            // Circuit breaker (FUR-39): a resume signal (Linear: a mention is
+            // an explicit human summon, FUR-37) clears the breaker and the
+            // turn proceeds; anything else bounces off the paused session.
+            if (args.resumeSignal !== true) {
+              return {
+                _tag: "Ignored",
+                reason:
+                  `session ${session.value.id} is paused after repeated failures; ` +
+                  `mention Maestro in a comment (or re-delegate the issue) to resume`,
+              } satisfies IngestOutcome;
+            }
+            yield* resume(session.value.id, args.context.actor);
+            const taskRun = yield* createTurn(session.value.id, args.context);
             return {
-              _tag: "Ignored",
-              reason:
-                `session ${session.value.id} is paused after repeated failures; ` +
-                `re-apply the trigger label to resume`,
+              _tag: "SessionResumed",
+              sessionId: session.value.id,
+              taskRunId: taskRun.id,
             } satisfies IngestOutcome;
           }
           const taskRun = yield* createTurn(session.value.id, args.context);

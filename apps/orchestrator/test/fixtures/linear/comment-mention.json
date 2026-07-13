@@ -1,0 +1,47 @@
+{
+  "url": "https://linear.app/furtado-interactive/issue/FUR-37/m217-linear-agent-delegation-trigger-spike-dependent#comment-d2eeeb8c",
+  "data": {
+    "id": "d2eeeb8c-fcae-48bf-b8cb-0de92dd6d326",
+    "body": "@maestro test",
+    "user": {
+      "id": "44a54ee0-45d7-4f0c-a10f-b99daed1e59f",
+      "url": "https://linear.app/furtado-interactive/profiles/shade",
+      "name": "João Furtado",
+      "email": "operator@example.com",
+      "avatarUrl": "https://example.com/avatars/operator.png"
+    },
+    "issue": {
+      "id": "976f65f1-83e6-45d6-82a8-d10161e116bc",
+      "url": "https://linear.app/furtado-interactive/issue/FUR-37/m217-linear-agent-delegation-trigger-spike-dependent",
+      "team": {
+        "id": "6d81e504-6a8a-44f0-ae14-000191e67ac0",
+        "key": "FUR",
+        "name": "Furtado Interactive"
+      },
+      "title": "M2.17 — Linear agent-delegation trigger (spike-dependent)",
+      "teamId": "6d81e504-6a8a-44f0-ae14-000191e67ac0",
+      "identifier": "FUR-37"
+    },
+    "userId": "44a54ee0-45d7-4f0c-a10f-b99daed1e59f",
+    "issueId": "976f65f1-83e6-45d6-82a8-d10161e116bc",
+    "botActor": null,
+    "createdAt": "2026-07-13T10:55:17.400Z",
+    "updatedAt": "2026-07-13T10:55:17.377Z",
+    "reactionData": [],
+    "isArtificialAgentSessionRoot": false
+  },
+  "type": "Comment",
+  "actor": {
+    "id": "44a54ee0-45d7-4f0c-a10f-b99daed1e59f",
+    "url": "https://linear.app/furtado-interactive/profiles/shade",
+    "name": "João Furtado",
+    "type": "user",
+    "email": "operator@example.com",
+    "avatarUrl": "https://example.com/avatars/operator.png"
+  },
+  "action": "create",
+  "createdAt": "2026-07-13T10:55:17.400Z",
+  "webhookId": "16b4006e-fd5c-4be8-bc93-833375bd07ca",
+  "organizationId": "12098655-83e2-4d5b-88eb-64bebd92aee2",
+  "webhookTimestamp": 0
+}

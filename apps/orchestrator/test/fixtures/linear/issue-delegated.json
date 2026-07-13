@@ -1,0 +1,91 @@
+{
+  "url": "https://linear.app/furtado-interactive/issue/FUR-37/m217-linear-agent-delegation-trigger-spike-dependent",
+  "data": {
+    "id": "976f65f1-83e6-45d6-82a8-d10161e116bc",
+    "url": "https://linear.app/furtado-interactive/issue/FUR-37/m217-linear-agent-delegation-trigger-spike-dependent",
+    "team": {
+      "id": "6d81e504-6a8a-44f0-ae14-000191e67ac0",
+      "key": "FUR",
+      "name": "Furtado Interactive"
+    },
+    "state": {
+      "id": "7e895e6f-8bd7-4c6e-916e-929612e42368",
+      "name": "Backlog",
+      "type": "backlog",
+      "color": "#bec2c8"
+    },
+    "title": "M2.17 — Linear agent-delegation trigger (spike-dependent)",
+    "labels": [],
+    "number": 37,
+    "teamId": "6d81e504-6a8a-44f0-ae14-000191e67ac0",
+    "project": {
+      "id": "cb65a02f-51f7-450e-b04f-ac5536fb85dc",
+      "url": "https://linear.app/furtado-interactive/project/maestro-954c40567be7",
+      "name": "Maestro"
+    },
+    "slaType": "all",
+    "stateId": "7e895e6f-8bd7-4c6e-916e-929612e42368",
+    "assignee": {
+      "id": "44a54ee0-45d7-4f0c-a10f-b99daed1e59f",
+      "url": "https://linear.app/furtado-interactive/profiles/shade",
+      "name": "João Furtado",
+      "email": "operator@example.com",
+      "avatarUrl": "https://example.com/avatars/operator.png"
+    },
+    "botActor": null,
+    "delegate": {
+      "id": "eff9ea77-7653-46b1-b7e0-cd649140807b",
+      "url": "https://linear.app/furtado-interactive/profiles/maestro",
+      "name": "Maestro",
+      "email": "00000000-0000-0000-0000-000000000000@oauthapp.linear.app",
+      "avatarUrl": "https://example.com/avatars/maestro.png"
+    },
+    "labelIds": [],
+    "priority": 0,
+    "createdAt": "2026-07-11T22:30:29.636Z",
+    "creatorId": "44a54ee0-45d7-4f0c-a10f-b99daed1e59f",
+    "milestone": {
+      "id": "06b6c44a-d153-4d5c-8066-abea8e988fb8",
+      "name": "M2 — Full Delivery (minus unknowns)"
+    },
+    "projectId": "cb65a02f-51f7-450e-b04f-ac5536fb85dc",
+    "sortOrder": -31410,
+    "updatedAt": "2026-07-13T10:54:50.693Z",
+    "assigneeId": "44a54ee0-45d7-4f0c-a10f-b99daed1e59f",
+    "delegateId": "eff9ea77-7653-46b1-b7e0-cd649140807b",
+    "identifier": "FUR-37",
+    "description": "Upgrade from the label trigger to Linear's native agent delegation. Delegating an issue to the Maestro app user starts work; @maestro mentions queue follow-up turns.",
+    "reactionData": [],
+    "addedToTeamAt": "2026-07-11T22:30:32.054Z",
+    "priorityLabel": "No priority",
+    "subscriberIds": [
+      "44a54ee0-45d7-4f0c-a10f-b99daed1e59f",
+      "eff9ea77-7653-46b1-b7e0-cd649140807b"
+    ],
+    "descriptionData": "{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Upgrade from the label trigger to Linear's native agent delegation. Delegating an issue to the Maestro app user starts work; @maestro mentions queue follow-up turns.\"}]}]}",
+    "addedToProjectAt": "2026-07-11T22:30:32.054Z",
+    "prioritySortOrder": -31426,
+    "projectMilestoneId": "06b6c44a-d153-4d5c-8066-abea8e988fb8",
+    "previousIdentifiers": [],
+    "inheritsSharedAccess": false
+  },
+  "type": "Issue",
+  "actor": {
+    "id": "44a54ee0-45d7-4f0c-a10f-b99daed1e59f",
+    "url": "https://linear.app/furtado-interactive/profiles/shade",
+    "name": "João Furtado",
+    "type": "user",
+    "email": "operator@example.com",
+    "avatarUrl": "https://example.com/avatars/operator.png"
+  },
+  "action": "update",
+  "createdAt": "2026-07-13T10:54:50.694Z",
+  "webhookId": "16b4006e-fd5c-4be8-bc93-833375bd07ca",
+  "updatedFrom": {
+    "updatedAt": "2026-07-13T10:52:09.274Z",
+    "assigneeId": null,
+    "delegateId": null
+  },
+  "organizationId": "12098655-83e2-4d5b-88eb-64bebd92aee2",
+  "webhookTimestamp": 0
+}

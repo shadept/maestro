@@ -50,6 +50,13 @@
       "when": 1783887502966,
       "tag": "0006_late_dexter_bennett",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1783972602148,
+      "tag": "0007_tiny_blade",
+      "breakpoints": true
     }
   ]
 }

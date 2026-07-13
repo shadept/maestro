@@ -113,6 +113,24 @@ export const SessionDetail = (props: {
   );
 };
 
+/** Long summaries (multi-line git stderr, resolution instructions) clamp to ~4 lines. */
+const FAILURE_CLAMP_CHARS = 400;
+
+const FailureSummary = (props: { text: string }) => {
+  const [expanded, setExpanded] = createSignal(false);
+  const long = () => props.text.split("\n").length > 4 || props.text.length > FAILURE_CLAMP_CHARS;
+  return (
+    <div class="failure-summary">
+      <pre classList={{ clamped: long() && !expanded() }}>{props.text}</pre>
+      <Show when={long()}>
+        <button type="button" class="failure-toggle" onClick={() => setExpanded(!expanded())}>
+          {expanded() ? "show less" : "show full error"}
+        </button>
+      </Show>
+    </div>
+  );
+};
+
 const TaskRunRow = (props: { run: TaskRun; store: EventStore; client: AdminClient }) => {
   const [expanded, setExpanded] = createSignal(false);
   const [context] = createResource(
@@ -130,6 +148,10 @@ const TaskRunRow = (props: { run: TaskRun; store: EventStore; client: AdminClien
         <span class="spacer" />
         <span class="muted">{expanded() ? "▾" : "▸"}</span>
       </button>
+      {/* The WHY of a FAILED run, always visible — no expanding, no Postgres. */}
+      <Show when={props.run.state === "FAILED" && props.run.failureSummary}>
+        {(summary) => <FailureSummary text={summary()} />}
+      </Show>
       <Show when={expanded()}>
         <div class="run-body">
           <Show when={props.run.resultText}>

@@ -1,5 +1,5 @@
 import type { Project, Session, TaskContext, TaskRun } from "@maestro/domain";
-import { Effect, Exit, Layer, Option } from "effect";
+import { Effect, Exit, Layer, Option, PubSub } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { AuditRepo } from "../../src/db/AuditRepo.ts";
@@ -12,7 +12,14 @@ import { TaskRunRepo } from "../../src/db/TaskRunRepo.ts";
 import { EventBus } from "../../src/events/EventBus.ts";
 import { startTestDb, type TestDb } from "../support/pg.ts";
 
-type Repos = ProjectRepo | SessionRepo | TaskRunRepo | AuditRepo | DeliveryRepo | OutboxRepo;
+type Repos =
+  | ProjectRepo
+  | SessionRepo
+  | TaskRunRepo
+  | AuditRepo
+  | DeliveryRepo
+  | OutboxRepo
+  | EventBus;
 
 let testDb: TestDb;
 let layer: Layer.Layer<Repos>;
@@ -26,7 +33,10 @@ beforeAll(async () => {
     AuditRepo.layer,
     DeliveryRepo.layer,
     OutboxRepo.layer,
-  ).pipe(Layer.provideMerge(Db.layerTest(testDb.connectionString)), Layer.provide(EventBus.layer));
+  ).pipe(
+    Layer.provideMerge(Db.layerTest(testDb.connectionString)),
+    Layer.provideMerge(EventBus.layer),
+  );
 });
 
 afterAll(async () => {
@@ -300,20 +310,40 @@ describe("TaskRunRepo", () => {
     expect(result.resultText).toBe("All done.");
   });
 
-  it("records a failure cause atomically with the transition", async () => {
+  it("records failure cause + summary atomically with the transition and publishes them", async () => {
     const project = await run(makeProject);
     const session = await run(makeSession(project));
     const created = await run(makeRun(session));
 
-    const failed = await run(
+    const summary = "worker exited with code 137 (OOM)";
+    const { failed, events } = await run(
       Effect.gen(function* () {
         const repo = yield* TaskRunRepo;
+        const bus = yield* EventBus;
+        const subscription = yield* bus.subscribe();
         yield* repo.transition(created.id, "PROVISIONING");
-        return yield* repo.transition(created.id, "FAILED", { cause: "OOM" });
-      }),
+        const failedRun = yield* repo.transition(created.id, "FAILED", {
+          cause: "OOM",
+          failureSummary: summary,
+        });
+        return { failed: failedRun, events: yield* PubSub.takeUpTo(subscription, 10) };
+      }).pipe(Effect.scoped),
     );
+    // cause + summary land in the same UPDATE as the state (single CAS write)
     expect(failed.state).toBe("FAILED");
     expect(failed.cause).toBe("OOM");
+    expect(failed.failureSummary).toBe(summary);
+
+    // the SSE entity event carries the summary — the UI needs no extra fetch
+    const failedEvents = events.flatMap((event) =>
+      event._tag === "TaskRunStateChanged" &&
+      event.taskRun.id === created.id &&
+      event.taskRun.state === "FAILED"
+        ? [event.taskRun]
+        : [],
+    );
+    expect(failedEvents).toHaveLength(1);
+    expect(failedEvents[0]?.failureSummary).toBe(summary);
   });
 
   it("illegal transition fails with StateTransitionError", async () => {

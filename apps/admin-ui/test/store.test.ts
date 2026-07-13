@@ -47,6 +47,7 @@ const taskRun = (overrides: Record<string, unknown> = {}): TaskRun =>
     evictableAfter: null,
     cause: null,
     resultText: null,
+    failureSummary: null,
     ...overrides,
   });
 

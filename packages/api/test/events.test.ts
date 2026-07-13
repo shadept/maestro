@@ -44,6 +44,7 @@ const taskRun: TaskRun = {
   evictableAfter: null,
   cause: null,
   resultText: null,
+  failureSummary: null,
 };
 
 const encode = Schema.encodeSync(MaestroEventFromJsonString);

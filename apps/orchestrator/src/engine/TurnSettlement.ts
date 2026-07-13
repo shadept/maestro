@@ -214,6 +214,9 @@ export class TurnSettlement extends Context.Service<
           yield* taskRunRepo.transition(args.taskRunId, "FAILED", {
             cause: args.cause,
             evictableAfter: evictableAt(),
+            // The same text the ticket comment carries, persisted on the run so
+            // the admin UI shows WHY without a trip to the ticket (or Postgres).
+            failureSummary: args.summary,
             ...(args.resultText !== undefined && { resultText: args.resultText }),
           });
           yield* enqueueOutcome({

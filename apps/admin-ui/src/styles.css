@@ -238,6 +238,38 @@ button:disabled {
   flex: 1;
 }
 
+/* failure reason under a FAILED run — always visible, monospace, wraps */
+.failure-summary {
+  margin: 0 12px 10px;
+}
+
+.failure-summary pre {
+  margin: 0;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--bad);
+  border-left-width: 3px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.failure-summary pre.clamped {
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.failure-summary .failure-toggle {
+  background: none;
+  border: none;
+  color: var(--accent);
+  padding: 2px 0 0;
+  font-size: 12px;
+}
+
 .run-body {
   padding: 0 12px 12px;
   border-top: 1px solid var(--border);

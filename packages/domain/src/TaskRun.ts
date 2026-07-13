@@ -45,5 +45,12 @@ export const TaskRun = Schema.Struct({
   cause: Schema.NullOr(TaskRunCause),
   /** Final agent text from the turn's Result event; null until the turn settles. */
   resultText: Schema.NullOr(Schema.String),
+  /**
+   * Human-readable failure reason, set atomically with the FAILED transition
+   * (like `cause`). The same text the turn-failed ticket comment carries — the
+   * one source of truth an operator reads in the admin UI without querying
+   * Postgres.
+   */
+  failureSummary: Schema.NullOr(Schema.String),
 });
 export type TaskRun = typeof TaskRun.Type;

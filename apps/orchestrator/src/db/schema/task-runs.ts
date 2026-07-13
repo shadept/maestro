@@ -22,6 +22,8 @@ export const taskRuns = pgTable(
     cause: text("cause").$type<TaskRunCause>(),
     /** Final agent text from the turn's Result event. */
     resultText: text("result_text"),
+    /** Failure reason, written atomically with the FAILED transition. */
+    failureSummary: text("failure_summary"),
     /** Captured worker stdout/stderr for the turn (append-heavy, read on demand). */
     logOutput: text("log_output"),
     traceId: text("trace_id"),

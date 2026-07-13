@@ -332,6 +332,8 @@ describe("StartupReconciler", () => {
       const settled = await run(getRun(orphaned.taskRunId));
       expect(settled.state).toBe("FAILED");
       expect(settled.cause).toBe("CANCELLED");
+      // ...with the reason persisted on the run (shared TurnSettlement path)
+      expect(settled.failureSummary).toContain("Maestro restarted");
       // ...announced through the normal event pipeline
       expect(
         events.some(

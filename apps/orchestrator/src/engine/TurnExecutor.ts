@@ -64,6 +64,26 @@ const classifyOutcome = (exit: ExitInfo, result: ResultEvent | null): TaskRunCau
   exit.cause ?? (exit.exitCode === 0 && result?.ok === true ? null : "ERROR");
 
 /**
+ * Failure-summary rendering. Tagged schema errors without a `message` field
+ * stringify to their bare tag (`String(GitCommandError) === "GitCommandError"`),
+ * which is useless to an operator — append the schema fields so the persisted
+ * summary / ticket comment / admin UI carry the actual reason (command +
+ * stderr for git, entity + id for not-found, ...). Errors with a message
+ * (BranchDivergedError, ForgeApiError) already stringify usefully.
+ */
+const describeError = (error: unknown): string => {
+  const rendered = String(error);
+  if (error instanceof Error && error.message !== "") return rendered;
+  if (typeof error === "object" && error !== null) {
+    const fields = Object.entries(error)
+      .filter(([key]) => key !== "_tag")
+      .map(([key, value]) => `${key}: ${String(value)}`);
+    if (fields.length > 0) return `${rendered} (${fields.join(", ")})`;
+  }
+  return rendered;
+};
+
+/**
  * The end-to-end turn pipeline (Tech Requirements §8, MVP cold-container
  * model): TaskRun PENDING → PROVISIONING (clone + worktree + config dir) →
  * EXECUTING (worker runs the AgentContract command; logs stream to the
@@ -264,24 +284,34 @@ export class TurnExecutor extends Context.Service<
             .publish({ session, project, context, proposal })
             .pipe(
               Effect.tapError((error) =>
-                settlement
-                  .settleFailed({
-                    taskRunId: job.taskRunId,
-                    sessionId: job.sessionId,
-                    ticket: session.ticketReference,
-                    cause: "ERROR",
-                    summary: `agent succeeded but publishing failed: ${String(error)}`,
-                    pr: prOf(session),
-                    resultText,
-                  })
-                  .pipe(
-                    Effect.catch((settleError) =>
-                      Effect.logError(
-                        "TurnExecutor: publish-failure settlement incomplete",
-                        settleError,
+                Effect.gen(function* () {
+                  // The full structured error (GitCommandError keeps command +
+                  // stderr as fields), not just its string form — the operator
+                  // must learn WHY from the orchestrator log alone.
+                  yield* Effect.logError(
+                    "TurnExecutor: publish failed after a successful agent turn",
+                    { taskRunId: job.taskRunId, sessionId: job.sessionId },
+                    error,
+                  );
+                  yield* settlement
+                    .settleFailed({
+                      taskRunId: job.taskRunId,
+                      sessionId: job.sessionId,
+                      ticket: session.ticketReference,
+                      cause: "ERROR",
+                      summary: `agent succeeded but publishing failed: ${describeError(error)}`,
+                      pr: prOf(session),
+                      resultText,
+                    })
+                    .pipe(
+                      Effect.catch((settleError) =>
+                        Effect.logError(
+                          "TurnExecutor: publish-failure settlement incomplete",
+                          settleError,
+                        ),
                       ),
-                    ),
-                  ),
+                    );
+                }),
               ),
             );
           // no-commit turns publish nothing; the callback still links a PR
@@ -306,6 +336,13 @@ export class TurnExecutor extends Context.Service<
             failureText !== null && failureText.length > 0
               ? failureText
               : `worker exited with code ${exit.exitCode} (${failureCause})`;
+          yield* Effect.logError("TurnExecutor: agent turn failed", {
+            taskRunId: job.taskRunId,
+            sessionId: job.sessionId,
+            cause: failureCause,
+            exitCode: exit.exitCode,
+            summary,
+          });
           yield* settlement.settleFailed({
             taskRunId: job.taskRunId,
             sessionId: job.sessionId,
@@ -354,12 +391,29 @@ export class TurnExecutor extends Context.Service<
                   sessionId: job.sessionId,
                   ticket: session.ticketReference,
                   cause: "ERROR",
-                  summary: String(error),
+                  summary: describeError(error),
                   pr: prOf(session),
                 })
                 .pipe(
+                  // Log once per incident, after the settle: a rejected
+                  // FAILED→FAILED transition means the tailored publish-failure
+                  // settlement above already settled AND logged this error —
+                  // stay silent instead of the old misleading
+                  // "settlement incomplete" line.
+                  Effect.andThen(
+                    Effect.logError(
+                      "TurnExecutor: turn failed with orchestration error",
+                      { taskRunId: job.taskRunId, sessionId: job.sessionId },
+                      error,
+                    ),
+                  ),
+                  Effect.catchTag("StateTransitionError", () => Effect.void),
                   Effect.catch((settleError) =>
-                    Effect.logError("TurnExecutor: failure settlement incomplete", settleError),
+                    Effect.logError(
+                      "TurnExecutor: failure settlement incomplete",
+                      { taskRunId: job.taskRunId, turnError: describeError(error) },
+                      settleError,
+                    ),
                   ),
                 ),
             ),

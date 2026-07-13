@@ -31,6 +31,7 @@ const toTaskRun = (row: typeof taskRuns.$inferSelect): TaskRun =>
     evictableAfter: row.evictableAfter,
     cause: row.cause,
     resultText: row.resultText,
+    failureSummary: row.failureSummary,
   });
 
 const allStates = Object.keys(taskRunTransitions) as ReadonlyArray<TaskRunState>;
@@ -40,6 +41,8 @@ export interface TaskRunTransitionOptions {
   readonly expiresAt?: Date;
   readonly evictableAfter?: Date;
   readonly resultText?: string;
+  /** Failure reason, persisted atomically with a FAILED transition (like `cause`). */
+  readonly failureSummary?: string;
 }
 
 export class TaskRunRepo extends Context.Service<
@@ -183,6 +186,9 @@ export class TaskRunRepo extends Context.Service<
                   evictableAfter: options.evictableAfter,
                 }),
                 ...(options?.resultText !== undefined && { resultText: options.resultText }),
+                ...(options?.failureSummary !== undefined && {
+                  failureSummary: options.failureSummary,
+                }),
               })
               .where(and(eq(taskRuns.id, id), inArray(taskRuns.state, [...legalFrom])))
               .returning(),

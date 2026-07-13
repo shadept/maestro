@@ -146,6 +146,7 @@ describe("TaskRun", () => {
     evictableAfter: null,
     cause: null,
     resultText: null,
+    failureSummary: null,
   };
 
   it("round-trips", () => {
@@ -153,15 +154,17 @@ describe("TaskRun", () => {
     expect(run.state).toBe("PENDING");
   });
 
-  it("round-trips a failed run with cause and deadlines", () => {
+  it("round-trips a failed run with cause, deadlines, and failure summary", () => {
     const failed = roundTrip(TaskRun, {
       ...valid,
       state: "FAILED",
       expiresAt: new Date("2026-07-12T02:00:00Z"),
       evictableAfter: new Date("2026-07-12T03:00:00Z"),
       cause: "OOM",
+      failureSummary: "worker exited with code 137 (OOM)",
     });
     expect(failed.cause).toBe("OOM");
+    expect(failed.failureSummary).toBe("worker exited with code 137 (OOM)");
   });
 
   it("rejects an unknown cause", () => {

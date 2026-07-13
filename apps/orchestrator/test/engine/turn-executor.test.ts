@@ -494,6 +494,10 @@ describe("TurnExecutor", () => {
     // never COMPLETED with a silently missing PR
     expect(settled.taskRun.state).toBe("FAILED");
     expect(settled.taskRun.cause).toBe("ERROR");
+    // the failure reason is persisted on the run itself (admin UI reads it
+    // straight off the entity — no ticket, no Postgres query)
+    expect(settled.taskRun.failureSummary).toContain("publishing failed");
+    expect(settled.taskRun.failureSummary).toContain("github is down");
     // the agent's final text is still preserved on the run
     expect(settled.taskRun.resultText).toBe("Committed agent-output.txt.");
     expect(settled.session.state).toBe("WARM_IDLE");
@@ -504,6 +508,8 @@ describe("TurnExecutor", () => {
     expect(payload.kind).toBe("turn-failed");
     expect(payload.cause).toBe("ERROR");
     expect(payload.summary).toContain("publishing failed");
+    // one source of truth: the row carries exactly the ticket-comment text
+    expect(settled.taskRun.failureSummary).toBe(payload.summary);
     expect(payload.pr).toBeNull();
 
     // the branch push itself succeeded — a later retry only needs the forge
@@ -535,6 +541,8 @@ describe("TurnExecutor", () => {
     expect(settled.taskRun.state).toBe("FAILED");
     expect(settled.taskRun.cause).toBe("ERROR");
     expect(settled.taskRun.resultText).toBe("fake agent exploded");
+    // agent failures persist their reason on the run too
+    expect(settled.taskRun.failureSummary).toBe("fake agent exploded");
     expect(settled.session.state).toBe("WARM_IDLE");
 
     expect(settled.outbox).toHaveLength(1);

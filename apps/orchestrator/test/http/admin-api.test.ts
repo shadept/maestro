@@ -80,8 +80,6 @@ const setup = (externalId: string) =>
       actor: "shade",
       title: `Ticket ${externalId}`,
       body: "do the thing",
-      agentModel: null,
-      agentEffort: null,
       deliveryId: `d-${externalId}`,
       payload: {},
     });

@@ -56,7 +56,6 @@ const makeProject = (agent: AgentOverrides = {}): Project =>
   });
 
 const makeContext = (
-  overrides: { model?: string; effort?: AgentEffort } = {},
   base: { title: string | null; body: string } = {
     title: "Add a lint rule",
     body: "Please add the no-console lint rule to the repo.",
@@ -68,18 +67,16 @@ const makeContext = (
     actor: "shade",
     title: base.title,
     body: base.body,
-    agentModel: overrides.model ?? null,
-    agentEffort: overrides.effort ?? null,
     deliveryId: "d-1",
     payload: {},
   });
 
 const firstTurnContext = makeContext();
 
-const followupContext = makeContext(
-  {},
-  { title: null, body: "Also apply it to the test files, please." },
-);
+const followupContext = makeContext({
+  title: null,
+  body: "Also apply it to the test files, please.",
+});
 
 // The orders every prompt must end with, for the test sessions above.
 const STANDING_ORDERS = standingOrders({ branchName: "maestro/FUR-12", ticketId: "FUR-12" });
@@ -235,13 +232,14 @@ describe("AgentContract.buildCommand", () => {
   });
 });
 
+// Precedence is session pin > project > deployment > CLI default. The
+// task-level (label) tier that once topped this was removed as YAGNI.
 describe("AgentContract.buildCommand model/effort precedence (FUR-41)", () => {
   // Runs buildCommand with the given levels populated and returns the command.
   const build = async (args: {
     readonly config?: { model?: string; effort?: AgentEffort };
     readonly project?: AgentOverrides;
     readonly session?: { claudeSessionUuid?: string; model?: string; effort?: AgentEffort };
-    readonly task?: { model?: string; effort?: AgentEffort };
   }) => {
     const { layer } = makeLayer({
       ...(args.config?.model !== undefined && { agentModel: Option.some(args.config.model) }),
@@ -252,7 +250,7 @@ describe("AgentContract.buildCommand model/effort precedence (FUR-41)", () => {
         const agent = yield* AgentContract;
         return agent.buildCommand({
           session: makeSession(args.session?.claudeSessionUuid ?? null, args.session ?? {}),
-          context: makeContext(args.task ?? {}),
+          context: makeContext(),
           project: makeProject(args.project ?? {}),
           configDir: "/cfg",
         });
@@ -296,20 +294,20 @@ describe("AgentContract.buildCommand model/effort precedence (FUR-41)", () => {
     expect(flagValue(command.argv, "--effort")).toBe("medium");
   });
 
-  it("task level beats project and deployment", async () => {
+  it("session pin beats project and deployment", async () => {
     const command = await build({
       config: { model: "claude-haiku-4-5", effort: "low" },
       project: { model: "claude-sonnet-4-5", effort: "medium" },
-      task: { model: "claude-opus-4-6", effort: "max" },
+      session: { model: "claude-opus-4-6", effort: "max" },
     });
     expect(flagValue(command.argv, "--model")).toBe("claude-opus-4-6");
     expect(flagValue(command.argv, "--effort")).toBe("max");
   });
 
-  it("task level beats deployment with no project override in between", async () => {
+  it("session pin beats deployment with no project override in between", async () => {
     const command = await build({
       config: { model: "claude-haiku-4-5" },
-      task: { model: "claude-opus-4-6" },
+      session: { model: "claude-opus-4-6" },
     });
     expect(flagValue(command.argv, "--model")).toBe("claude-opus-4-6");
   });
@@ -341,15 +339,6 @@ describe("AgentContract.buildCommand model/effort precedence (FUR-41)", () => {
     expect(flagValue(command.argv, "--model")).toBe("claude-opus-4-6");
     expect(flagValue(command.argv, "--effort")).toBe("high");
     expect(flagValue(command.argv, "--resume")).toBe(CLAUDE_UUID);
-  });
-
-  it("a task-level override deliberately beats the session pin on a resume turn", async () => {
-    const command = await build({
-      session: { claudeSessionUuid: CLAUDE_UUID, model: "claude-opus-4-6", effort: "high" },
-      task: { model: "claude-haiku-4-5", effort: "low" },
-    });
-    expect(flagValue(command.argv, "--model")).toBe("claude-haiku-4-5");
-    expect(flagValue(command.argv, "--effort")).toBe("low");
   });
 
   it("flags precede --resume so the resumed session picks them up", async () => {

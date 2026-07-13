@@ -18,7 +18,7 @@ export const sessions = pgTable(
     prUrl: text("pr_url"),
     state: text("state").$type<SessionState>().notNull(),
     // The model/effort pinned by the session's first turn (FUR-41) — resume
-    // turns keep it unless a task-level override says otherwise.
+    // turns keep it regardless of later config/project edits.
     agentModel: text("agent_model"),
     agentEffort: text("agent_effort").$type<AgentEffort>(),
     terminationRequestedAt: timestamp("termination_requested_at", { withTimezone: true }),

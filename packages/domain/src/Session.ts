@@ -51,8 +51,8 @@ export const Session = Schema.Struct({
    * The model/effort the session's FIRST turn resolved (FUR-41), pinned so
    * resume turns keep running on the model the claude session started with —
    * a deployment/project config change never silently switches a live
-   * session; only a task-level override (per-turn, deliberate) does. Null =
-   * the first turn resolved no override (CLI default) or hasn't run yet.
+   * session. Null = the first turn resolved no override (CLI default) or
+   * hasn't run yet.
    */
   agentModel: Schema.NullOr(Schema.NonEmptyString),
   agentEffort: Schema.NullOr(AgentEffort),

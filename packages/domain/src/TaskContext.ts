@@ -1,5 +1,4 @@
 import { Schema } from "effect";
-import { AgentEffort } from "./AgentSettings.ts";
 
 // The normalized inbound event shape. Every ingest source (Linear webhook,
 // generic REST API) maps its platform payload into a TaskContext; everything
@@ -24,16 +23,10 @@ export const TaskContext = Schema.Struct({
   title: Schema.NullOr(Schema.String),
   /** The text that drives the turn: triggering comment, or issue body on first turn. */
   body: Schema.String,
-  /**
-   * Task-level agent model override (FUR-41), the most specific of the three
-   * levels. Linear: parsed at ingest from a `maestro:model=<id>` issue label.
-   * Null on comment-triggered turns — Linear comment webhooks carry no labels,
-   * so task-level overrides can only arrive on label (issue) events; the
-   * session's pinned first-turn model covers the turns in between.
-   */
-  agentModel: Schema.NullOr(Schema.NonEmptyString),
-  /** Task-level effort override (`maestro:effort=<level>` label). Same reach as agentModel. */
-  agentEffort: Schema.NullOr(AgentEffort),
+  // Task-level agentModel/agentEffort overrides (FUR-41 label parsing) were
+  // removed as YAGNI. Stored task_runs.context rows may still carry the keys
+  // (migration 0006 backfilled them) — Schema.Struct strips unknown keys on
+  // decode, so they are inert. Re-adding = revert the removal commit.
   /** Platform delivery id — the idempotency key for webhook dedup. */
   deliveryId: Schema.NonEmptyString,
   /** The original platform payload, preserved opaquely for outbound responders. */

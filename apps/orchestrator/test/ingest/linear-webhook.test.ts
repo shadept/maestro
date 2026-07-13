@@ -20,7 +20,7 @@ import { RepoLocks } from "../../src/git/RepoLocks.ts";
 import { WorktreeManager } from "../../src/git/WorktreeManager.ts";
 import { WebhookRoutes } from "../../src/http/webhooks.ts";
 import { IngestPipeline } from "../../src/ingest/IngestPipeline.ts";
-import { LinearIngest, parseAgentOverrideLabels } from "../../src/ingest/LinearIngest.ts";
+import { LinearIngest } from "../../src/ingest/LinearIngest.ts";
 import { TurnQueue } from "../../src/queue/TurnQueue.ts";
 import { LINEAR_TEST_SECRET, loadLinearFixture, signLinearDelivery } from "../support/linear.ts";
 import { startTestDb, type TestDb } from "../support/pg.ts";
@@ -415,7 +415,10 @@ describe("POST /api/webhooks/linear", () => {
     expect(await run(runsOf(session))).toHaveLength(3);
   });
 
-  it("agent-override labels land in the TaskContext; comment turns carry none (FUR-41)", async () => {
+  // Task-level `maestro:model=`/`maestro:effort=` labels (FUR-41) were removed
+  // as YAGNI — but issues in the wild may still carry them, so they must stay
+  // inert: ordinary labels that neither trigger, fail, nor configure anything.
+  it("leftover agent-override-shaped labels are inert ordinary labels", async () => {
     const TICKET_M = "FUR-91";
     const label = (name: string, n: number) => ({
       id: `cd1e7f3a-2b8c-4a9d-b5e6-0f4a7c1d8e${n}0`,
@@ -428,8 +431,7 @@ describe("POST /api/webhooks/linear", () => {
       labels: [
         label("maestro", 1),
         label("maestro:model=claude-sonnet-4-5", 2),
-        // case-insensitive prefix + level, like Linear label conventions
-        label("Maestro:Effort=LOW", 3),
+        label("maestro:effort=turbo", 3),
       ],
     });
     const started = await run(post(signLinearDelivery(fixture)));
@@ -444,77 +446,10 @@ describe("POST /api/webhooks/linear", () => {
         }),
       ),
     );
-    const runs = await run(runsOf(session));
-    const context = await run(
-      Effect.gen(function* () {
-        const taskRuns = yield* TaskRunRepo;
-        // biome-ignore lint/style/noNonNullAssertion: SessionStarted queued exactly one run
-        return yield* taskRuns.getContext(runs[0]!.id);
-      }),
-    );
-    expect(context.agentModel).toBe("claude-sonnet-4-5");
-    expect(context.agentEffort).toBe("low");
-
-    // Linear comment payloads carry no labels — the comment turn's context
-    // has no task-level override (the session pin covers continuity).
-    const comment = withData(loadLinearFixture("comment-created"), {
-      body: "Carry on.",
-      issue: {
-        id: "9a3b5f80-1e2a-4b0e-9f3d-2c7a8f1e6b01",
-        identifier: TICKET_M,
-        title: "Fix the flux capacitor",
-      },
-    });
-    const queued = await run(post(signLinearDelivery(comment)));
-    expect(queued.json.outcome).toBe("TurnQueued");
-    const runs2 = await run(runsOf(session));
-    expect(runs2).toHaveLength(2);
-    const commentContext = await run(
-      Effect.gen(function* () {
-        const taskRuns = yield* TaskRunRepo;
-        // biome-ignore lint/style/noNonNullAssertion: length asserted above
-        return yield* taskRuns.getContext(runs2[1]!.id);
-      }),
-    );
-    expect(commentContext.agentModel).toBeNull();
-    expect(commentContext.agentEffort).toBeNull();
-  });
-
-  it("an invalid effort label is ignored, never a failed delivery (FUR-41)", async () => {
-    const TICKET_I = "FUR-92";
-    const fixture = withData(loadLinearFixture("issue-labeled"), {
-      identifier: TICKET_I,
-      labels: [
-        { id: "cd1e7f3a-2b8c-4a9d-b5e6-0f4a7c1d8e40", color: "#5e6ad2", name: "maestro" },
-        {
-          id: "cd1e7f3a-2b8c-4a9d-b5e6-0f4a7c1d8e50",
-          color: "#5e6ad2",
-          name: "maestro:effort=turbo",
-        },
-      ],
-    });
-    const started = await run(post(signLinearDelivery(fixture)));
-    expect(started.status).toBe(200);
-    expect(started.json.outcome).toBe("SessionStarted");
-
-    const session = Option.getOrThrow(
-      await run(
-        Effect.gen(function* () {
-          const sessions = yield* SessionRepo;
-          return yield* sessions.findActiveByTicket({ source: "linear", externalId: TICKET_I });
-        }),
-      ),
-    );
-    const runs = await run(runsOf(session));
-    const context = await run(
-      Effect.gen(function* () {
-        const taskRuns = yield* TaskRunRepo;
-        // biome-ignore lint/style/noNonNullAssertion: SessionStarted queued exactly one run
-        return yield* taskRuns.getContext(runs[0]!.id);
-      }),
-    );
-    expect(context.agentModel).toBeNull();
-    expect(context.agentEffort).toBeNull();
+    // nothing was parsed off the labels onto the session
+    expect(session.agentModel).toBeNull();
+    expect(session.agentEffort).toBeNull();
+    expect(await run(runsOf(session))).toHaveLength(1);
   });
 
   it("issue moved to done terminates the session and cancels its queued turns", async () => {
@@ -595,45 +530,5 @@ describe("POST /api/webhooks/linear", () => {
       }),
     );
     expect(audits.some((a) => a.action === "ticket-canceled")).toBe(true);
-  });
-});
-
-describe("parseAgentOverrideLabels (FUR-41)", () => {
-  const names = (...labels: string[]) => labels.map((name) => ({ name }));
-
-  it("extracts model and effort, other labels untouched", () => {
-    const parsed = parseAgentOverrideLabels(
-      names("maestro", "bug", "maestro:model=claude-sonnet-4-5", "maestro:effort=medium"),
-    );
-    expect(parsed).toEqual({ model: "claude-sonnet-4-5", effort: "medium", invalid: [] });
-  });
-
-  it("no override labels: both null", () => {
-    expect(parseAgentOverrideLabels(names("maestro", "urgent"))).toEqual({
-      model: null,
-      effort: null,
-      invalid: [],
-    });
-  });
-
-  it("prefix matching is case-insensitive; the model value keeps its case", () => {
-    const parsed = parseAgentOverrideLabels(names("Maestro:Model=Claude-Opus-4-6"));
-    expect(parsed.model).toBe("Claude-Opus-4-6");
-  });
-
-  it("last matching label wins on duplicates", () => {
-    const parsed = parseAgentOverrideLabels(
-      names("maestro:model=claude-haiku-4-5", "maestro:model=claude-opus-4-6"),
-    );
-    expect(parsed.model).toBe("claude-opus-4-6");
-  });
-
-  it("reports unusable values as invalid and ignores them", () => {
-    const parsed = parseAgentOverrideLabels(
-      names("maestro:model=", "maestro:effort=turbo", "maestro:effort=low"),
-    );
-    expect(parsed.model).toBeNull();
-    expect(parsed.effort).toBe("low");
-    expect(parsed.invalid).toEqual(["maestro:model=", "maestro:effort=turbo"]);
   });
 });

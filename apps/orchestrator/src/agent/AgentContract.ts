@@ -148,17 +148,12 @@ export class AgentContract extends Context.Service<
       return {
         buildCommand: ({ session, context, project, configDir }) => {
           const isFirstTurn = session.claudeSessionUuid === null;
-          // FUR-41 precedence: task > session pin > project > deployment.
+          // FUR-41 precedence: session pin > project > deployment. (A task
+          // level once sat above the pin — removed as YAGNI.)
           const model =
-            context.agentModel ??
-            session.agentModel ??
-            project.agent.model ??
-            Option.getOrNull(config.agentModel);
+            session.agentModel ?? project.agent.model ?? Option.getOrNull(config.agentModel);
           const effort =
-            context.agentEffort ??
-            session.agentEffort ??
-            project.agent.effort ??
-            Option.getOrNull(config.agentEffort);
+            session.agentEffort ?? project.agent.effort ?? Option.getOrNull(config.agentEffort);
           const task =
             isFirstTurn && context.title !== null
               ? `${context.title}\n\n${context.body}`

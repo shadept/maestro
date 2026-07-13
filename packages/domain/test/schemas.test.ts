@@ -191,8 +191,6 @@ describe("TaskContext", () => {
     actor: "shade",
     title: "Add a lint rule",
     body: "Please add a lint rule",
-    agentModel: null,
-    agentEffort: null,
     deliveryId: "delivery-123",
     payload: { type: "Issue", action: "update", nested: { anything: [1, 2, 3] } },
   };
@@ -210,17 +208,16 @@ describe("TaskContext", () => {
     expect(() => Schema.decodeUnknownSync(TaskContext)({ ...valid, deliveryId: "" })).toThrow();
   });
 
-  it("carries task-level agent overrides and validates the effort level (FUR-41)", () => {
-    const ctx = roundTrip(TaskContext, {
+  it("tolerates legacy agentModel/agentEffort keys in stored contexts (removed FUR-41 task level)", () => {
+    // Migration 0006 backfilled these keys into task_runs.context rows; the
+    // fields were later removed as YAGNI. Decoding must strip, never reject.
+    const ctx = Schema.decodeUnknownSync(TaskContext)({
       ...valid,
       agentModel: "claude-haiku-4-5",
       agentEffort: "low",
     });
-    expect(ctx.agentModel).toBe("claude-haiku-4-5");
-    expect(ctx.agentEffort).toBe("low");
-    expect(() =>
-      Schema.decodeUnknownSync(TaskContext)({ ...valid, agentEffort: "warp-speed" }),
-    ).toThrow();
+    expect(ctx).not.toHaveProperty("agentModel");
+    expect(ctx).not.toHaveProperty("agentEffort");
   });
 });
 

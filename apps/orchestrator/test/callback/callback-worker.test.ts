@@ -75,8 +75,6 @@ const setup = (overrides: Partial<TurnOutcomePayload> = {}) =>
       actor: "João Furtado",
       title: null,
       body: "Also update the operator handbook, please.",
-      agentModel: null,
-      agentEffort: null,
       deliveryId: randomUUID(),
       // the raw Linear webhook payload, preserved for exactly this consumer
       payload: { type: "Comment", action: "create", data: { id: randomUUID(), issueId: ISSUE_ID } },

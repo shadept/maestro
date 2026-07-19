@@ -12,6 +12,13 @@ const make = Effect.fn(function* (connectionString: string) {
     Effect.sync(() => new pg.Pool({ connectionString })),
     (p) => Effect.promise(() => p.end()),
   );
+  // An idle pooled client that loses its connection emits "error" on the pool;
+  // without a listener Node escalates it to an uncaught exception and kills the
+  // process. The loss is recoverable (the pool replaces dead clients), so log
+  // and move on — same pattern as the pg-boss listener in TurnQueue.
+  pool.on("error", (error) => {
+    Effect.runFork(Effect.logWarning("Db: idle pooled connection lost", { error: String(error) }));
+  });
   const client = drizzle(pool, { schema });
   return {
     client,

@@ -24,6 +24,20 @@ const config = {
   runtimeMode: Config.literals(["local-cli", "k8s"], "MAESTRO_RUNTIME_MODE").pipe(
     Config.withDefault("local-cli" as const),
   ),
+  /** Namespace WorkerRuntime.layerK8s creates worker Pods/Secrets in. Unused in local-cli mode. */
+  k8sNamespace: Config.nonEmptyString("MAESTRO_K8S_NAMESPACE").pipe(Config.withDefault("maestro")),
+  /**
+   * PVC backing `storageRoot` inside the cluster (worktrees + repo caches +
+   * session config dirs) — every WorkerSpec mount is an identity mount under
+   * `storageRoot` (see TurnExecutor.identityMounts), so WorkerRuntime.layerK8s
+   * renders each as a `subPath` mount of this one claim, keeping the
+   * container-side absolute path identical to the host-side one the git
+   * metadata already points at. Must be ReadWriteMany if the orchestrator and
+   * its workers can land on different nodes. Unused in local-cli mode.
+   */
+  k8sStorageClaimName: Config.nonEmptyString("MAESTRO_K8S_STORAGE_CLAIM_NAME").pipe(
+    Config.withDefault("maestro-storage"),
+  ),
   maxConcurrentWorkers: Config.int("MAESTRO_MAX_CONCURRENT_WORKERS").pipe(Config.withDefault(2)),
   /**
    * Agent tier of the two-tier resource model (Tech Requirements §8, M2.5):
@@ -148,6 +162,8 @@ export class AppConfig extends Context.Service<
     readonly storageRoot: string;
     readonly runtimeTemplate: string;
     readonly runtimeMode: "local-cli" | "k8s";
+    readonly k8sNamespace: string;
+    readonly k8sStorageClaimName: string;
     readonly maxConcurrentWorkers: number;
     readonly agentTierMemoryMib: number;
     readonly agentTierCpuMillicores: number;
@@ -186,6 +202,8 @@ export class AppConfig extends Context.Service<
       storageRoot: "/tmp/maestro-test",
       runtimeTemplate: "docker run",
       runtimeMode: "local-cli",
+      k8sNamespace: "maestro-test",
+      k8sStorageClaimName: "maestro-storage",
       maxConcurrentWorkers: 2,
       agentTierMemoryMib: 1024,
       agentTierCpuMillicores: 1000,

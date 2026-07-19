@@ -5,7 +5,12 @@ per-project extension — see "Extending this image" below). Contents:
 `node:24-slim` (Debian-slim, Node LTS) + git + pnpm (via corepack, pinned to
 the workspace's `packageManager`) + python3 + a pinned
 `@anthropic-ai/claude-code` installed globally, so `claude` is on PATH — the
-command `AgentContract` builds. Runs as the non-root `node` user (uid 1000);
+command `AgentContract` builds. Also on PATH: a pinned docker CLI **client**
+(no daemon). Real turns never use it — but Maestro's own test suite shells out
+to `docker` (WorkerRuntime's local-cli runtime + the fake-agent harness), so
+the image must carry it to build and test Maestro inside itself (the dogfood
+proof below). WorkerRuntime never mounts a docker socket into a worker, so in a
+real turn that binary is inert. Runs as the non-root `node` user (uid 1000);
 no credentials are baked in — agent auth (`CLAUDE_CODE_OAUTH_TOKEN` /
 `ANTHROPIC_API_KEY`) arrives via the container environment at runtime,
 injected by `WorkerRuntime`.
@@ -38,9 +43,9 @@ Point the orchestrator at either tag with `MAESTRO_WORKER_IMAGE` (defaults to
 Image size is reported by the CI job's "Report image size" step
 (`docker images`) on every build — check the latest `base-image` workflow run
 for the current figure. It is expected to stay a modest multiple of
-`node:24-slim` (git, pnpm, python3, and one npm-installed CLI add comparably
-little); if a change balloons it, that's a signal something pulled in more
-than the spec calls for.
+`node:24-slim` (git, pnpm, python3, one npm-installed CLI, and the ~40 MB
+static docker client add comparably little); if a change balloons it beyond
+that, that's a signal something pulled in more than the spec calls for.
 
 ## CLAUDE_CONFIG_DIR
 

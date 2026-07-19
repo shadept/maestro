@@ -59,19 +59,18 @@ jobs:
       #                    about toolchain completeness, not the
       #                    root-refusal security property (verified live,
       #                    see PROGRESS.md FUR-20 FIX entry).
-      # The docker socket lets testcontainers-based suites (real Postgres via
-      # the API client, no CLI needed) run fine, but the base image ships no
-      # `docker` CLI binary — workers never need one, only this test harness
-      # does (WorkerRuntime's local-cli suite + the fake-agent build/cleanup
-      # helper). MAESTRO_SKIP_DOCKER_TESTS (vitest.config.ts) excludes just
-      # those files here; the host `ci` job leaves it unset and always runs
-      # every test.
+      # The base image ships the docker CLI client (see images/base/Dockerfile),
+      # so the FULL test suite runs here — no tests skipped. testcontainers
+      # suites talk to the mounted daemon socket via the API, and the suites
+      # that shell out to the `docker` CLI (WorkerRuntime's local-cli runtime +
+      # the shared fake-agent build/cleanup harness) find the binary on PATH
+      # and drive that same socket. This makes the dogfood step prove the image
+      # can build AND test Maestro end to end, identical to the host `ci` job.
       - name: Dogfood — pnpm install && pnpm test inside the image
         run: |
           docker run --rm \
             --network host \
             -u 0 \
-            -e MAESTRO_SKIP_DOCKER_TESTS=true \
             -v /var/run/docker.sock:/var/run/docker.sock \
             -v "${GITHUB_WORKSPACE}:/workspace" \
             -w /workspace \

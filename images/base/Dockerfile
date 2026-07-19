@@ -1,10 +1,12 @@
 # Maestro official base worker image (FUR-34 / M2.14).
 #
 # Every turn runs inside a container built FROM this image (directly, or via
-# a per-project extension — see README "Extending this image"). It ships
-# exactly what a turn needs: node + pnpm + git + python3 + a pinned
-# claude-code CLI on PATH as `claude` (exactly what AgentContract.buildCommand
-# invokes). NO credentials are baked in — agent auth
+# a per-project extension — see README "Extending this image"). It ships what
+# a turn needs: node + pnpm + git + python3 + a pinned claude-code CLI on PATH
+# as `claude` (exactly what AgentContract.buildCommand invokes) — plus a
+# pinned docker CLI *client* that no real turn uses, but that Maestro's own
+# test suite needs to dogfood-build itself inside this image (see the docker
+# block below). NO credentials are baked in — agent auth
 # (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY) arrives via the container
 # environment at runtime, injected by WorkerRuntime. CLAUDE_CONFIG_DIR is
 # injected the same way, as an identity bind-mount at a host-absolute path
@@ -25,8 +27,32 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        git \
        ca-certificates \
+       curl \
        python3 \
   && rm -rf /var/lib/apt/lists/*
+
+# docker CLI *client only* (no daemon). Maestro's test suite exercises
+# WorkerRuntime's local-cli runtime and the shared fake-agent harness, which
+# shell out to `docker build`/`run`/`rm` against a daemon reached over a
+# mounted socket — so the image must carry the client to build and test
+# Maestro inside itself (the dogfood acceptance criterion, base-image.yml).
+# Real turns never spawn nested containers and WorkerRuntime never mounts the
+# socket into a worker, so in a real turn this binary is simply never invoked
+# — it adds no capability or credential. We keep only the ~40 MB static
+# client from Docker's official archive (the daemon binaries in the tarball
+# are discarded); the buildx plugin is omitted, so `docker build` falls back
+# to the daemon's classic build endpoint — enough for the trivial fake-agent
+# image. Pinned deliberately, like every other tool here.
+ARG DOCKER_CLI_VERSION=29.6.2
+RUN arch="$(dpkg --print-architecture)" \
+  && case "$arch" in \
+       amd64) dockerArch=x86_64 ;; \
+       arm64) dockerArch=aarch64 ;; \
+       *) echo "unsupported architecture: $arch" >&2; exit 1 ;; \
+     esac \
+  && curl -fsSL "https://download.docker.com/linux/static/stable/${dockerArch}/docker-${DOCKER_CLI_VERSION}.tgz" \
+       | tar -xz -C /usr/local/bin --strip-components=1 docker/docker \
+  && docker --version
 
 # pnpm via corepack (bundled with Node) — pinned to the workspace's
 # `packageManager` field (package.json) so a project's own `pnpm install`
@@ -47,7 +73,7 @@ ENV HOME=/home/node
 RUN git config --global safe.directory '*'
 
 LABEL org.opencontainers.image.source="https://github.com/shadept/maestro" \
-      org.opencontainers.image.description="Maestro official base worker image: node + pnpm + git + python3 + claude-code" \
+      org.opencontainers.image.description="Maestro official base worker image: node + pnpm + git + python3 + docker-cli + claude-code" \
       org.opencontainers.image.licenses="MIT" \
       maestro.claude-code-version="${CLAUDE_CODE_VERSION}"
 

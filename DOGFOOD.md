@@ -12,8 +12,13 @@ follows are the manual steps that need real secrets and a reachable webhook.
   (`pnpm --filter @maestro/orchestrator db:migrate`).
 - The real project is **registered**: team key `FUR` →
   `https://github.com/shadept/maestro`, base branch `main`.
-- Worker base image **built**: `maestro/worker-base:m1` (node:24-slim + git +
-  claude-code 2.1.207 on PATH as `claude`; no credentials baked in).
+- Worker base image: the official `images/base` image (FUR-34/M2.14 —
+  node:24-slim + pnpm + git + python3 + claude-code on PATH as `claude`; no
+  credentials baked in), published to
+  `ghcr.io/shadept/maestro-worker-base:latest` — that's `MAESTRO_WORKER_IMAGE`'s
+  default now, nothing to build locally unless iterating on the Dockerfile
+  itself (`docker build -t maestro/worker-base:local images/base`, see
+  `images/base/README.md`).
 - Full pipeline smoke-tested with the fake agent against a throwaway file://
   project: signed webhook 200 → session + turn created → container executed →
   logs streamed (SSE + persisted) → run COMPLETED → admin UI served at `/`.
@@ -43,8 +48,10 @@ Also confirm in `.env`:
 - `MAESTRO_STORAGE_ROOT` — must be a directory Docker Desktop can bind-mount
   (worktrees are identity-mounted into workers). The prepared default
   `/Users/shade/.maestro/storage` is fine.
-- `MAESTRO_WORKER_IMAGE=maestro/worker-base:m1` (rebuild any time with
-  `docker build -t maestro/worker-base:m1 images/base`).
+- `MAESTRO_WORKER_IMAGE` — leave unset to use the published
+  `ghcr.io/shadept/maestro-worker-base:latest` default, or point it at a
+  locally-built `maestro/worker-base:local` while iterating on
+  `images/base/Dockerfile`.
 
 ### Triggering (FUR-37: delegation + mentions, no more label)
 

@@ -121,6 +121,24 @@ describe("event store", () => {
       ]);
     }));
 
+  it("hands QueueChanged events to a registered queue listener", () =>
+    withStore((store) => {
+      const seen: Array<{ trigger: string; taskRunId: string }> = [];
+      store.setQueueListener((event) =>
+        seen.push({ trigger: event.trigger, taskRunId: event.taskRunId }),
+      );
+
+      store.apply({
+        _tag: "QueueChanged",
+        trigger: "dispatched",
+        taskRunId: RID_1,
+        sessionId: SID_A,
+        activeCount: 1,
+      });
+
+      expect(seen).toEqual([{ trigger: "dispatched", taskRunId: RID_1 }]);
+    }));
+
   it("appends log chunks in order and rebases onto historical fetches", () =>
     withStore((store) => {
       const log = createMemo(() => store.logFor(RID_1));

@@ -19,6 +19,7 @@ export const App = () => {
   // Optional browser notifications on turn start/completion — the notifier
   // opts in via localStorage and rides the store's run-change transitions.
   const notifier = createNotifier(store);
+  store.setQueueListener(notifier.handleQueueChange);
   store.setRunListener(notifier.handleRunChange);
   // FUR-17 kept the token in this signal only, never persisted. Explicitly
   // overridden by user request: the token now round-trips through

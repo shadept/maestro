@@ -1,17 +1,25 @@
+import type { QueueChanged } from "@maestro/api";
 import type { Session, TaskRun } from "@maestro/domain";
 import { createSignal } from "solid-js";
 import type { EventStore } from "./store.ts";
 
 // Optional browser notifications for the turn lifecycle (start / success /
-// failure). Purely an admin-UI concern: it rides the SSE TaskRunStateChanged
-// events the store already applies. The store hands us (previous, next) for
-// every run change; we classify the transition and fire a Web Notification
-// when the operator has opted in and the browser granted permission.
+// failure). Purely an admin-UI concern, driven off the SSE events the store
+// already applies — but the two boundaries need different signals:
 //
-// Snapshot safety: on (re)connect the store clears its run map and the server
-// replays a full snapshot, so every run is first-seen with previous ===
-// undefined. describeRunTransition treats a first-seen run as silent — a
-// reconnect never re-alerts historical runs, only genuine live transitions do.
+//  - START rides the live-only QueueChanged("dispatched") event. The queue
+//    stream is never part of the reconnect snapshot (the snapshot is only
+//    SystemStatus + sessions + active runs), so every turn a worker picks up
+//    alerts exactly once — first turn or Nth turn on a session alike. Keying
+//    START off a TaskRun→EXECUTING transition instead would miss turns: a run
+//    in flight during a reconnect is replayed in the snapshot already
+//    EXECUTING, indistinguishable from a fresh start, so it has to be
+//    suppressed — and reconnects (orchestrator restarts, HMR reloads) are
+//    routine.
+//  - COMPLETION rides the TaskRun terminal transition, where the prior state
+//    matters: success vs failure, and staying silent for a run first seen
+//    already-terminal in a reconnect snapshot (a finished turn must not
+//    re-alert on every reconnect).
 
 const STORAGE_KEY = "maestro-notifications-enabled";
 
@@ -31,23 +39,24 @@ const persistEnabled = (on: boolean): void => {
   }
 };
 
-/** The ticket ref is the operator's mental key for a run; fall back to a short id. */
-const runLabel = (run: TaskRun, session: Session | undefined): string =>
-  session ? session.ticketReference.externalId : `session ${run.sessionId.slice(0, 8)}`;
+/** The ticket ref is the operator's mental key for a session; fall back to a short id. */
+const sessionLabel = (session: Session | undefined, sessionId: string): string =>
+  session ? session.ticketReference.externalId : `session ${sessionId.slice(0, 8)}`;
 
 const clip = (text: string): string => (text.length > 140 ? `${text.slice(0, 139)}…` : text);
 
-/** Notification content for a run transition, or null when it should stay silent. */
-export const describeRunTransition = (
+/**
+ * Notification content for a run's terminal transition, or null when it should
+ * stay silent — an unchanged state, a first-seen run from a reconnect snapshot,
+ * or any non-terminal hop (start is handled via the queue signal, not here).
+ */
+export const describeCompletion = (
   previous: TaskRun | undefined,
   next: TaskRun,
   label: string,
 ): { readonly title: string; readonly body: string } | null => {
-  // First sight of a run is snapshot replay of history, not a live change.
   if (previous === undefined || previous.state === next.state) return null;
   switch (next.state) {
-    case "EXECUTING":
-      return { title: `${label} started`, body: "The turn is now running." };
     case "COMPLETED":
       return {
         title: `${label} completed`,
@@ -59,7 +68,7 @@ export const describeRunTransition = (
         body: clip(next.failureSummary ?? next.cause ?? "The turn failed."),
       };
     default:
-      // PENDING / PROVISIONING hops are intermediate, not lifecycle boundaries.
+      // PENDING / PROVISIONING / EXECUTING are not completion boundaries.
       return null;
   }
 };
@@ -68,14 +77,14 @@ export type NotifyPermission = NotificationPermission | "unsupported";
 
 /**
  * Reactive notifier: owns the opt-in signal + permission state and turns store
- * run-transitions into Web Notifications. Created once at the app root and
- * registered as the store's run listener.
+ * events into Web Notifications. Registered as the store's queue + run
+ * listeners at the app root.
  */
 export const createNotifier = (store: EventStore) => {
   const supported = typeof Notification !== "undefined";
   // Effectively on only when the operator opted in AND permission is currently
-  // granted — a stored "true" with revoked permission reads as off (and stays
-  // silent) until they re-enable.
+  // granted — a stored "true" with revoked permission reads as off until they
+  // re-enable.
   const [enabled, setEnabled] = createSignal(
     loadEnabled() && supported && Notification.permission === "granted",
   );
@@ -83,22 +92,36 @@ export const createNotifier = (store: EventStore) => {
     supported ? Notification.permission : "unsupported",
   );
 
-  /** Fires from the store for every TaskRunStateChanged, with the prior row. */
-  const handleRunChange = (previous: TaskRun | undefined, next: TaskRun): void => {
-    if (!enabled() || permission() !== "granted") return;
-    const content = describeRunTransition(
-      previous,
-      next,
-      runLabel(next, store.session(next.sessionId)),
-    );
-    if (content === null) return;
+  const armed = (): boolean => enabled() && permission() === "granted";
+
+  const fire = (content: { readonly title: string; readonly body: string }, tag: string): void => {
     try {
-      // tag keyed by run+state: dedupes at-least-once duplicates while keeping
-      // a run's start and completion as two distinct alerts.
-      new Notification(content.title, { body: content.body, tag: `${next.id}:${next.state}` });
+      new Notification(content.title, { body: content.body, tag });
     } catch {
       // Permission can flip underfoot (revoked in another tab); ignore the throw.
     }
+  };
+
+  /** START: fires for every turn a worker picks up (live-only queue event). */
+  const handleQueueChange = (event: QueueChanged): void => {
+    if (!armed() || event.trigger !== "dispatched") return;
+    const label = sessionLabel(store.session(event.sessionId), event.sessionId);
+    fire(
+      { title: `${label} started`, body: "A worker picked up the turn." },
+      `${event.taskRunId}:started`,
+    );
+  };
+
+  /** COMPLETION: fires from each TaskRunStateChanged, with the prior row. */
+  const handleRunChange = (previous: TaskRun | undefined, next: TaskRun): void => {
+    if (!armed()) return;
+    const content = describeCompletion(
+      previous,
+      next,
+      sessionLabel(store.session(next.sessionId), next.sessionId),
+    );
+    if (content === null) return;
+    fire(content, `${next.id}:${next.state}`);
   };
 
   /** Enable: request permission while still "default"; only stick if granted. */
@@ -124,7 +147,7 @@ export const createNotifier = (store: EventStore) => {
     else void enable();
   };
 
-  return { enabled, permission, supported, handleRunChange, toggle };
+  return { enabled, permission, supported, handleQueueChange, handleRunChange, toggle };
 };
 
 export type Notifier = ReturnType<typeof createNotifier>;

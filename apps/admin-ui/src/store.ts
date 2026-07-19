@@ -1,4 +1,4 @@
-import type { MaestroEvent, SystemStatus } from "@maestro/api";
+import type { MaestroEvent, QueueChanged, SystemStatus } from "@maestro/api";
 import type { Session, SessionId, TaskRun, TaskRunId } from "@maestro/domain";
 import { createSignal } from "solid-js";
 
@@ -35,14 +35,18 @@ export const createEventStore = () => {
   /** Non-null while the SSE supervisor is waiting out a reconnect backoff. */
   const [retry, setRetry] = createSignal<RetryState | null>(null);
 
-  // Optional observer of task-run changes, given the prior row + the new one.
-  // Keeps side-effecting consumers (e.g. browser notifications) out of the
-  // store: it stays a pure reducer and hands the transition to whoever cares.
+  // Optional observers for side-effecting consumers (e.g. browser
+  // notifications). The store stays a pure reducer and hands events out: run
+  // changes carry the prior row + the new one; queue changes pass through as-is.
   let runListener: ((previous: TaskRun | undefined, next: TaskRun) => void) | undefined;
   const setRunListener = (
     listener: (previous: TaskRun | undefined, next: TaskRun) => void,
   ): void => {
     runListener = listener;
+  };
+  let queueListener: ((event: QueueChanged) => void) | undefined;
+  const setQueueListener = (listener: (event: QueueChanged) => void): void => {
+    queueListener = listener;
   };
 
   const apply = (event: MaestroEvent): void => {
@@ -58,6 +62,7 @@ export const createEventStore = () => {
       }
       case "QueueChanged":
         setActiveTurns(event.activeCount);
+        queueListener?.(event);
         return;
       case "LogChunk":
         setLogs((map) => {
@@ -119,6 +124,7 @@ export const createEventStore = () => {
   return {
     apply,
     setRunListener,
+    setQueueListener,
     resetForSnapshot,
     rebaseLogs,
     setConnection,

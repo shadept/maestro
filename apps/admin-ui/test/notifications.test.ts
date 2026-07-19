@@ -1,12 +1,13 @@
 import { TaskRun, type TaskRunId } from "@maestro/domain";
 import { Schema } from "effect";
 import { describe, expect, it } from "vitest";
-import { describeRunTransition } from "../src/notifications.ts";
+import { describeCompletion } from "../src/notifications.ts";
 
-// The notifier's testable core: the pure transition classifier. It decides
-// which run state-changes surface a browser notification and with what text.
-// The reactive/permission wrapper (createNotifier) touches the browser
-// Notification global and is exercised in the app, not here.
+// The completion classifier is the notifier's testable core: it decides which
+// terminal run transitions surface a browser notification and with what text.
+// Start notifications ride the live-only QueueChanged("dispatched") event
+// (wired store → notifier), and the reactive/permission wrapper touches the
+// browser Notification global — both are exercised in the app, not here.
 
 const decodeRun = Schema.decodeUnknownSync(TaskRun);
 
@@ -25,49 +26,44 @@ const run = (state: string, overrides: Record<string, unknown> = {}): TaskRun =>
     ...overrides,
   });
 
-describe("describeRunTransition", () => {
+describe("describeCompletion", () => {
   it("stays silent for a first-seen run (snapshot replay, no prior state)", () => {
-    // The reconnect snapshot re-delivers every run with previous === undefined;
-    // none of these may re-alert.
-    expect(describeRunTransition(undefined, run("EXECUTING"), "FUR-9")).toBeNull();
-    expect(describeRunTransition(undefined, run("COMPLETED"), "FUR-9")).toBeNull();
-    expect(describeRunTransition(undefined, run("FAILED"), "FUR-9")).toBeNull();
+    // The reconnect snapshot re-delivers every active run with previous ===
+    // undefined; a terminal one must not re-alert.
+    expect(describeCompletion(undefined, run("COMPLETED"), "FUR-9")).toBeNull();
+    expect(describeCompletion(undefined, run("FAILED"), "FUR-9")).toBeNull();
   });
 
   it("stays silent when the state did not actually change (at-least-once duplicate)", () => {
-    expect(describeRunTransition(run("EXECUTING"), run("EXECUTING"), "FUR-9")).toBeNull();
+    expect(describeCompletion(run("COMPLETED"), run("COMPLETED"), "FUR-9")).toBeNull();
   });
 
-  it("stays silent for intermediate hops that are not lifecycle boundaries", () => {
-    expect(describeRunTransition(run("PENDING"), run("PROVISIONING"), "FUR-9")).toBeNull();
-  });
-
-  it("announces a start when a run reaches EXECUTING", () => {
-    const content = describeRunTransition(run("PROVISIONING"), run("EXECUTING"), "FUR-9");
-    expect(content?.title).toBe("FUR-9 started");
+  it("stays silent for non-terminal transitions (start is a queue-driven concern)", () => {
+    expect(describeCompletion(run("PENDING"), run("PROVISIONING"), "FUR-9")).toBeNull();
+    expect(describeCompletion(run("PROVISIONING"), run("EXECUTING"), "FUR-9")).toBeNull();
   });
 
   it("announces success with the result text, or a default when absent", () => {
-    const withResult = describeRunTransition(
+    const withResult = describeCompletion(
       run("EXECUTING"),
       run("COMPLETED", { resultText: "Opened PR #42" }),
       "FUR-9",
     );
     expect(withResult).toEqual({ title: "FUR-9 completed", body: "Opened PR #42" });
 
-    const noResult = describeRunTransition(run("EXECUTING"), run("COMPLETED"), "FUR-9");
+    const noResult = describeCompletion(run("EXECUTING"), run("COMPLETED"), "FUR-9");
     expect(noResult?.body).toBe("The turn finished successfully.");
   });
 
   it("announces failure, preferring the human summary over the cause code", () => {
-    const summarised = describeRunTransition(
+    const summarised = describeCompletion(
       run("EXECUTING"),
       run("FAILED", { cause: "ERROR", failureSummary: "npm install exited 1" }),
       "FUR-9",
     );
     expect(summarised).toEqual({ title: "FUR-9 failed", body: "npm install exited 1" });
 
-    const causeOnly = describeRunTransition(
+    const causeOnly = describeCompletion(
       run("EXECUTING"),
       run("FAILED", { cause: "OOM" }),
       "FUR-9",
@@ -77,7 +73,7 @@ describe("describeRunTransition", () => {
 
   it("clips an overlong body so the notification stays legible", () => {
     const long = "x".repeat(500);
-    const content = describeRunTransition(
+    const content = describeCompletion(
       run("EXECUTING"),
       run("COMPLETED", { resultText: long }),
       "FUR-9",

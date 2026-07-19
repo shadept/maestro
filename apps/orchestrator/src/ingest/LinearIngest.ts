@@ -3,7 +3,6 @@ import {
   type DbError,
   type GitError,
   IngestMappingError,
-  type Project,
   type QueueError,
   type TaskContext,
   WebhookVerificationError,
@@ -159,311 +158,294 @@ export class LinearIngest extends Context.Service<
       const pipeline = yield* IngestPipeline;
       const callback = yield* LinearCallback;
 
-      const verify = (delivery: LinearDelivery) =>
-        Effect.gen(function* () {
-          if (Option.isNone(config.linearWebhookSecret)) {
-            // Never guess: an unverifiable delivery is a rejected delivery.
-            return yield* new WebhookVerificationError({
-              source: "linear",
-              reason: "MAESTRO_LINEAR_WEBHOOK_SECRET is not configured",
-            });
-          }
-          if (delivery.signature === undefined) {
-            return yield* new WebhookVerificationError({
-              source: "linear",
-              reason: "missing linear-signature header",
-            });
-          }
-          if (
-            !signatureMatches(
-              delivery.rawBody,
-              delivery.signature,
-              config.linearWebhookSecret.value,
-            )
-          ) {
-            return yield* new WebhookVerificationError({
-              source: "linear",
-              reason: "signature mismatch",
-            });
-          }
-        });
+      const verify = Effect.fn(function* (delivery: LinearDelivery) {
+        if (Option.isNone(config.linearWebhookSecret)) {
+          // Never guess: an unverifiable delivery is a rejected delivery.
+          return yield* new WebhookVerificationError({
+            source: "linear",
+            reason: "MAESTRO_LINEAR_WEBHOOK_SECRET is not configured",
+          });
+        }
+        if (delivery.signature === undefined) {
+          return yield* new WebhookVerificationError({
+            source: "linear",
+            reason: "missing linear-signature header",
+          });
+        }
+        if (
+          !signatureMatches(delivery.rawBody, delivery.signature, config.linearWebhookSecret.value)
+        ) {
+          return yield* new WebhookVerificationError({
+            source: "linear",
+            reason: "signature mismatch",
+          });
+        }
+      });
 
       /**
        * Team key → registered project, shared by both trigger paths. None =
        * unregistered team: not an error (Linear would retry forever), but
        * loudly logged.
        */
-      const projectForTeam = (
-        teamKey: string | undefined,
-        deliveryId: string,
-      ): Effect.Effect<Option.Option<Project>, IngestMappingError | DbError> =>
-        Effect.gen(function* () {
-          if (teamKey === undefined) {
-            return yield* new IngestMappingError({
-              deliveryId,
-              reason: "payload has no team key",
-            });
-          }
-          const project = yield* projectRepo.findByLinearTeamKey(teamKey);
-          if (Option.isNone(project)) {
-            yield* Effect.logWarning("LinearIngest: no project registered for team", { teamKey });
-          }
-          return project;
-        });
+      const projectForTeam = Effect.fn(function* (teamKey: string | undefined, deliveryId: string) {
+        if (teamKey === undefined) {
+          return yield* new IngestMappingError({
+            deliveryId,
+            reason: "payload has no team key",
+          });
+        }
+        const project = yield* projectRepo.findByLinearTeamKey(teamKey);
+        if (Option.isNone(project)) {
+          yield* Effect.logWarning("LinearIngest: no project registered for team", { teamKey });
+        }
+        return project;
+      });
 
-      const mapIssueEvent = (
+      const mapIssueEvent = Effect.fn(function* (
         envelope: typeof Envelope.Type,
         deliveryId: string,
         payload: unknown,
-      ) =>
-        Effect.gen(function* () {
-          const issue = yield* decodeIssue(envelope.data).pipe(
-            Effect.mapError(
-              (error) => new IngestMappingError({ deliveryId, reason: String(error) }),
-            ),
+      ) {
+        const issue = yield* decodeIssue(envelope.data).pipe(
+          Effect.mapError((error) => new IngestMappingError({ deliveryId, reason: String(error) })),
+        );
+        const actor = envelope.actor?.name ?? "linear";
+        const ticket = { source: "linear", externalId: issue.identifier } as const;
+
+        // Terminal signal first: a done/canceled move outranks any
+        // delegation evidence riding the same issue update.
+        const terminal =
+          envelope.action === "update" && hasKey(envelope.updatedFrom, "stateId")
+            ? TERMINAL_STATE_TYPES[issue.state?.type ?? ""]
+            : undefined;
+        if (terminal !== undefined) {
+          return yield* pipeline.recordTerminal({ ticket, actor, signal: terminal });
+        }
+
+        // Delegation trigger (FUR-37): the handoff signal is the delegate
+        // actually CHANGING to the Maestro app user on this very event —
+        // updatedFrom carries the prior delegateId (same evidence pattern
+        // as the terminal stateId check above), so "still delegated on
+        // some unrelated issue edit" never re-triggers. `assigneeId` is
+        // deliberately not consulted: Linear's assign-to-agent UX sets the
+        // HUMAN as assignee and the agent as delegate in the same update
+        // (captured payload evidence), so assignee evidence would
+        // mis-trigger on ordinary human assignments.
+        const delegateChanged =
+          envelope.action === "update" && hasKey(envelope.updatedFrom, "delegateId");
+        if (!delegateChanged) {
+          return {
+            _tag: "Ignored",
+            reason: "issue event carries no delegation change",
+          } satisfies IngestOutcome;
+        }
+        const delegateId = issue.delegateId ?? null;
+        if (delegateId === null) {
+          return {
+            _tag: "Ignored",
+            reason: "issue was un-delegated",
+          } satisfies IngestOutcome;
+        }
+        if (Option.isNone(config.linearBotUserId)) {
+          // Load-bearing config gap: without the app user id we cannot
+          // recognize delegations addressed to us. Ignored (never a boot
+          // failure), but loud enough to diagnose from the logs.
+          yield* Effect.logWarning(
+            "LinearIngest: issue delegation received but MAESTRO_LINEAR_BOT_USER_ID is not configured — delegations cannot be recognized as Maestro's",
+            { issue: issue.identifier },
           );
-          const actor = envelope.actor?.name ?? "linear";
-          const ticket = { source: "linear", externalId: issue.identifier } as const;
+          return {
+            _tag: "Ignored",
+            reason: "MAESTRO_LINEAR_BOT_USER_ID is not configured; delegation not recognized",
+          } satisfies IngestOutcome;
+        }
+        if (delegateId !== config.linearBotUserId.value) {
+          return {
+            _tag: "Ignored",
+            reason: "issue delegated to a different agent user",
+          } satisfies IngestOutcome;
+        }
 
-          // Terminal signal first: a done/canceled move outranks any
-          // delegation evidence riding the same issue update.
-          const terminal =
-            envelope.action === "update" && hasKey(envelope.updatedFrom, "stateId")
-              ? TERMINAL_STATE_TYPES[issue.state?.type ?? ""]
-              : undefined;
-          if (terminal !== undefined) {
-            return yield* pipeline.recordTerminal({ ticket, actor, signal: terminal });
-          }
+        const project = yield* projectForTeam(issue.team?.key, deliveryId);
+        if (Option.isNone(project)) {
+          return {
+            _tag: "Ignored",
+            reason: `no project registered for Linear team ${issue.team?.key}`,
+          } satisfies IngestOutcome;
+        }
+        const context: TaskContext = {
+          source: "linear",
+          ticket,
+          actor,
+          title: issue.title,
+          body: issue.description ?? "",
+          deliveryId,
+          payload,
+        };
+        // A delegate change is always an explicit human act, so it doubles
+        // as the FUR-39 resume signal: re-delegating a breaker-paused
+        // session's issue (necessarily after un-delegating it first —
+        // updatedFrom must show the delegate changed) clears the breaker
+        // and queues a fresh turn.
+        return yield* pipeline.startTask({
+          project: project.value,
+          context,
+          resumeSignal: true,
+        });
+      });
 
-          // Delegation trigger (FUR-37): the handoff signal is the delegate
-          // actually CHANGING to the Maestro app user on this very event —
-          // updatedFrom carries the prior delegateId (same evidence pattern
-          // as the terminal stateId check above), so "still delegated on
-          // some unrelated issue edit" never re-triggers. `assigneeId` is
-          // deliberately not consulted: Linear's assign-to-agent UX sets the
-          // HUMAN as assignee and the agent as delegate in the same update
-          // (captured payload evidence), so assignee evidence would
-          // mis-trigger on ordinary human assignments.
-          const delegateChanged =
-            envelope.action === "update" && hasKey(envelope.updatedFrom, "delegateId");
-          if (!delegateChanged) {
-            return {
-              _tag: "Ignored",
-              reason: "issue event carries no delegation change",
-            } satisfies IngestOutcome;
-          }
-          const delegateId = issue.delegateId ?? null;
-          if (delegateId === null) {
-            return {
-              _tag: "Ignored",
-              reason: "issue was un-delegated",
-            } satisfies IngestOutcome;
-          }
-          if (Option.isNone(config.linearBotUserId)) {
-            // Load-bearing config gap: without the app user id we cannot
-            // recognize delegations addressed to us. Ignored (never a boot
-            // failure), but loud enough to diagnose from the logs.
-            yield* Effect.logWarning(
-              "LinearIngest: issue delegation received but MAESTRO_LINEAR_BOT_USER_ID is not configured — delegations cannot be recognized as Maestro's",
-              { issue: issue.identifier },
-            );
-            return {
-              _tag: "Ignored",
-              reason: "MAESTRO_LINEAR_BOT_USER_ID is not configured; delegation not recognized",
-            } satisfies IngestOutcome;
-          }
-          if (delegateId !== config.linearBotUserId.value) {
-            return {
-              _tag: "Ignored",
-              reason: "issue delegated to a different agent user",
-            } satisfies IngestOutcome;
-          }
-
-          const project = yield* projectForTeam(issue.team?.key, deliveryId);
-          if (Option.isNone(project)) {
-            return {
-              _tag: "Ignored",
-              reason: `no project registered for Linear team ${issue.team?.key}`,
-            } satisfies IngestOutcome;
-          }
+      const mapCommentEvent = Effect.fn(function* (
+        envelope: typeof Envelope.Type,
+        deliveryId: string,
+        payload: unknown,
+      ) {
+        if (envelope.action !== "create") {
+          return {
+            _tag: "Ignored",
+            reason: `comment ${envelope.action} events are not turns`,
+          } satisfies IngestOutcome;
+        }
+        const comment = yield* decodeComment(envelope.data).pipe(
+          Effect.mapError((error) => new IngestMappingError({ deliveryId, reason: String(error) })),
+        );
+        // Self-trigger guards — BOTH run before mention detection, because
+        // Maestro's own comments legitimately contain "@maestro" text (the
+        // paused-session message tells the human to mention it).
+        //
+        // Layer 1 (FUR-39): content marker. Every comment format.ts renders
+        // starts with MAESTRO_COMMENT_MARKER, so a body carrying it is ours
+        // regardless of author — essential when MAESTRO_LINEAR_API_TOKEN is
+        // a personal key (single-account setups), where the author id can't
+        // separate Maestro from the human. The other FUR-39 layers live
+        // elsewhere: the consecutive-failure circuit breaker in
+        // TurnSettlement/IngestPipeline, failure-comment dedup in the outbox
+        // idempotency key (TurnSettlement.outcomeIdempotencyKey).
+        if (comment.body.startsWith(MAESTRO_COMMENT_MARKER)) {
+          return {
+            _tag: "Ignored",
+            reason: "comment carries the Maestro marker (self-trigger guard)",
+          } satisfies IngestOutcome;
+        }
+        // Layer 2 of the guard: the configured bot user id (the identity
+        // behind MAESTRO_LINEAR_API_TOKEN) is dropped too, when set.
+        if (
+          Option.isSome(config.linearBotUserId) &&
+          comment.userId === config.linearBotUserId.value
+        ) {
+          return {
+            _tag: "Ignored",
+            reason: "comment authored by the Maestro bot user",
+          } satisfies IngestOutcome;
+        }
+        // Plain comments are inert (FUR-37, deliberate behavior change):
+        // only an explicit @<handle> mention summons Maestro — humans
+        // talking to each other on a worked ticket no longer queue turns.
+        if (!mentionsHandle(comment.body, config.linearMentionHandle)) {
+          return {
+            _tag: "Ignored",
+            reason: `plain comment (no @${config.linearMentionHandle} mention)`,
+          } satisfies IngestOutcome;
+        }
+        const identifier = comment.issue?.identifier;
+        if (identifier === undefined) {
+          return yield* new IngestMappingError({
+            deliveryId,
+            reason: "comment payload has no issue identifier",
+          });
+        }
+        const ticket = { source: "linear", externalId: identifier } as const;
+        const actor = comment.user?.name ?? envelope.actor?.name ?? "linear";
+        if (yield* pipeline.hasActiveSession(ticket)) {
+          // No delegation re-check for existing sessions: any active
+          // session accepts mention-driven turns, so sessions started
+          // before FUR-37 (label-triggered) keep working unchanged. Every
+          // mention is an explicit human summon, so it doubles as the
+          // FUR-39 resume signal on a breaker-paused session.
           const context: TaskContext = {
             source: "linear",
             ticket,
             actor,
-            title: issue.title,
-            body: issue.description ?? "",
+            title: null,
+            body: comment.body,
             deliveryId,
             payload,
           };
-          // A delegate change is always an explicit human act, so it doubles
-          // as the FUR-39 resume signal: re-delegating a breaker-paused
-          // session's issue (necessarily after un-delegating it first —
-          // updatedFrom must show the delegate changed) clears the breaker
-          // and queues a fresh turn.
-          return yield* pipeline.startTask({
-            project: project.value,
-            context,
-            resumeSignal: true,
-          });
-        });
+          return yield* pipeline.queueTurn({ context, resumeSignal: true });
+        }
 
-      const mapCommentEvent = (
-        envelope: typeof Envelope.Type,
-        deliveryId: string,
-        payload: unknown,
-      ) =>
-        Effect.gen(function* () {
-          if (envelope.action !== "create") {
-            return {
-              _tag: "Ignored",
-              reason: `comment ${envelope.action} events are not turns`,
-            } satisfies IngestOutcome;
-          }
-          const comment = yield* decodeComment(envelope.data).pipe(
-            Effect.mapError(
-              (error) => new IngestMappingError({ deliveryId, reason: String(error) }),
-            ),
+        // Session-less mention: it may START work, but only on an issue
+        // actually delegated to Maestro. Comment webhooks carry neither the
+        // delegate nor the issue description, so both come from the Linear
+        // API. A mention on a non-delegated issue is Ignored — being
+        // mentionable must not let any bystander comment start a session.
+        if (Option.isNone(config.linearBotUserId)) {
+          yield* Effect.logWarning(
+            "LinearIngest: mention on an issue with no active session, but MAESTRO_LINEAR_BOT_USER_ID is not configured — cannot verify the issue is delegated to Maestro",
+            { issue: identifier },
           );
-          // Self-trigger guards — BOTH run before mention detection, because
-          // Maestro's own comments legitimately contain "@maestro" text (the
-          // paused-session message tells the human to mention it).
-          //
-          // Layer 1 (FUR-39): content marker. Every comment format.ts renders
-          // starts with MAESTRO_COMMENT_MARKER, so a body carrying it is ours
-          // regardless of author — essential when MAESTRO_LINEAR_API_TOKEN is
-          // a personal key (single-account setups), where the author id can't
-          // separate Maestro from the human. The other FUR-39 layers live
-          // elsewhere: the consecutive-failure circuit breaker in
-          // TurnSettlement/IngestPipeline, failure-comment dedup in the outbox
-          // idempotency key (TurnSettlement.outcomeIdempotencyKey).
-          if (comment.body.startsWith(MAESTRO_COMMENT_MARKER)) {
-            return {
-              _tag: "Ignored",
-              reason: "comment carries the Maestro marker (self-trigger guard)",
-            } satisfies IngestOutcome;
-          }
-          // Layer 2 of the guard: the configured bot user id (the identity
-          // behind MAESTRO_LINEAR_API_TOKEN) is dropped too, when set.
-          if (
-            Option.isSome(config.linearBotUserId) &&
-            comment.userId === config.linearBotUserId.value
-          ) {
-            return {
-              _tag: "Ignored",
-              reason: "comment authored by the Maestro bot user",
-            } satisfies IngestOutcome;
-          }
-          // Plain comments are inert (FUR-37, deliberate behavior change):
-          // only an explicit @<handle> mention summons Maestro — humans
-          // talking to each other on a worked ticket no longer queue turns.
-          if (!mentionsHandle(comment.body, config.linearMentionHandle)) {
-            return {
-              _tag: "Ignored",
-              reason: `plain comment (no @${config.linearMentionHandle} mention)`,
-            } satisfies IngestOutcome;
-          }
-          const identifier = comment.issue?.identifier;
-          if (identifier === undefined) {
-            return yield* new IngestMappingError({
-              deliveryId,
-              reason: "comment payload has no issue identifier",
-            });
-          }
-          const ticket = { source: "linear", externalId: identifier } as const;
-          const actor = comment.user?.name ?? envelope.actor?.name ?? "linear";
-          if (yield* pipeline.hasActiveSession(ticket)) {
-            // No delegation re-check for existing sessions: any active
-            // session accepts mention-driven turns, so sessions started
-            // before FUR-37 (label-triggered) keep working unchanged. Every
-            // mention is an explicit human summon, so it doubles as the
-            // FUR-39 resume signal on a breaker-paused session.
-            const context: TaskContext = {
-              source: "linear",
-              ticket,
-              actor,
-              title: null,
-              body: comment.body,
-              deliveryId,
-              payload,
-            };
-            return yield* pipeline.queueTurn({ context, resumeSignal: true });
-          }
-
-          // Session-less mention: it may START work, but only on an issue
-          // actually delegated to Maestro. Comment webhooks carry neither the
-          // delegate nor the issue description, so both come from the Linear
-          // API. A mention on a non-delegated issue is Ignored — being
-          // mentionable must not let any bystander comment start a session.
-          if (Option.isNone(config.linearBotUserId)) {
-            yield* Effect.logWarning(
-              "LinearIngest: mention on an issue with no active session, but MAESTRO_LINEAR_BOT_USER_ID is not configured — cannot verify the issue is delegated to Maestro",
-              { issue: identifier },
-            );
-            return {
-              _tag: "Ignored",
-              reason: "MAESTRO_LINEAR_BOT_USER_ID is not configured; cannot verify delegation",
-            } satisfies IngestOutcome;
-          }
-          const botUserId = config.linearBotUserId.value;
-          // Lookup failures are Ignored, not HTTP errors: the delivery is
-          // already recorded for dedup, so a Linear retry would no-op as
-          // Duplicate anyway — surfacing a 500 could not recover the event.
-          // The human re-mentions once the token/connectivity is fixed.
-          const delegation = yield* callback
-            .fetchIssueDelegation({ issueId: comment.issueId })
-            .pipe(
-              Effect.map(Option.some),
-              Effect.catch((error) =>
-                Effect.logWarning(
-                  "LinearIngest: delegation lookup failed for a session-less mention",
-                  { issue: identifier, error: String(error) },
-                ).pipe(Effect.as(Option.none())),
-              ),
-            );
-          if (Option.isNone(delegation)) {
-            return {
-              _tag: "Ignored",
-              reason: `could not verify delegation for ${identifier} (Linear lookup failed); re-mention once MAESTRO_LINEAR_API_TOKEN/connectivity is fixed`,
-            } satisfies IngestOutcome;
-          }
-          if (delegation.value.delegateId !== botUserId) {
-            return {
-              _tag: "Ignored",
-              reason: `mention on ${identifier}, which is not delegated to Maestro`,
-            } satisfies IngestOutcome;
-          }
-          const project = yield* projectForTeam(comment.issue?.team?.key, deliveryId);
-          if (Option.isNone(project)) {
-            return {
-              _tag: "Ignored",
-              reason: `no project registered for Linear team ${comment.issue?.team?.key}`,
-            } satisfies IngestOutcome;
-          }
-          // FIRST-TURN COMPOSITION (decided here, FUR-37): the issue
-          // description leads — it is the task, and the agent should see the
-          // ticket exactly as a delegation-started session would — with the
-          // summoning comment appended under a divider as the instruction
-          // that woke Maestro up.
-          const description = delegation.value.description?.trim() ?? "";
-          const body =
-            description === ""
-              ? comment.body
-              : `${description}\n\n---\n\nSummoning comment:\n\n${comment.body}`;
-          const context: TaskContext = {
-            source: "linear",
-            ticket,
-            actor,
-            title: comment.issue?.title ?? null,
-            body,
-            deliveryId,
-            payload,
-          };
-          return yield* pipeline.startTask({
-            project: project.value,
-            context,
-            resumeSignal: true,
-          });
+          return {
+            _tag: "Ignored",
+            reason: "MAESTRO_LINEAR_BOT_USER_ID is not configured; cannot verify delegation",
+          } satisfies IngestOutcome;
+        }
+        const botUserId = config.linearBotUserId.value;
+        // Lookup failures are Ignored, not HTTP errors: the delivery is
+        // already recorded for dedup, so a Linear retry would no-op as
+        // Duplicate anyway — surfacing a 500 could not recover the event.
+        // The human re-mentions once the token/connectivity is fixed.
+        const delegation = yield* callback.fetchIssueDelegation({ issueId: comment.issueId }).pipe(
+          Effect.map(Option.some),
+          Effect.catch((error) =>
+            Effect.logWarning("LinearIngest: delegation lookup failed for a session-less mention", {
+              issue: identifier,
+              error: String(error),
+            }).pipe(Effect.as(Option.none())),
+          ),
+        );
+        if (Option.isNone(delegation)) {
+          return {
+            _tag: "Ignored",
+            reason: `could not verify delegation for ${identifier} (Linear lookup failed); re-mention once MAESTRO_LINEAR_API_TOKEN/connectivity is fixed`,
+          } satisfies IngestOutcome;
+        }
+        if (delegation.value.delegateId !== botUserId) {
+          return {
+            _tag: "Ignored",
+            reason: `mention on ${identifier}, which is not delegated to Maestro`,
+          } satisfies IngestOutcome;
+        }
+        const project = yield* projectForTeam(comment.issue?.team?.key, deliveryId);
+        if (Option.isNone(project)) {
+          return {
+            _tag: "Ignored",
+            reason: `no project registered for Linear team ${comment.issue?.team?.key}`,
+          } satisfies IngestOutcome;
+        }
+        // FIRST-TURN COMPOSITION (decided here, FUR-37): the issue
+        // description leads — it is the task, and the agent should see the
+        // ticket exactly as a delegation-started session would — with the
+        // summoning comment appended under a divider as the instruction
+        // that woke Maestro up.
+        const description = delegation.value.description?.trim() ?? "";
+        const body =
+          description === ""
+            ? comment.body
+            : `${description}\n\n---\n\nSummoning comment:\n\n${comment.body}`;
+        const context: TaskContext = {
+          source: "linear",
+          ticket,
+          actor,
+          title: comment.issue?.title ?? null,
+          body,
+          deliveryId,
+          payload,
+        };
+        return yield* pipeline.startTask({
+          project: project.value,
+          context,
+          resumeSignal: true,
         });
+      });
 
       return {
         handleDelivery: Effect.fn("LinearIngest.handleDelivery")(function* (

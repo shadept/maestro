@@ -148,50 +148,48 @@ export class TurnSettlement extends Context.Service<
        * and the "session paused" ticket comment — crossing the threshold
        * speaks exactly once per pause.
        */
-      const maybeTripBreaker = (args: SettleTarget) =>
-        Effect.gen(function* () {
-          const failures = yield* taskRunRepo.countConsecutiveFailures(args.sessionId);
-          if (failures < CONSECUTIVE_FAILURE_LIMIT) return;
-          const { session, newlyPaused } = yield* sessionRepo.pause(args.sessionId);
-          if (!newlyPaused) return;
-          yield* auditRepo.record({
-            actor: "maestro",
-            action: "session-paused",
-            targetEntity: `session:${args.sessionId}`,
-            priorState: session.state,
-          });
-          yield* enqueueOutcome({
-            kind: "session-paused",
-            taskRunId: args.taskRunId,
-            sessionId: args.sessionId,
-            ticket: args.ticket,
-            summary:
-              // No leading "Maestro" — formatTurnComment already prefixes the
-              // marker; doubling read as "Maestro — Maestro paused" (FUR-42).
-              `Paused this session after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures. ` +
-              `New turns will not be triggered; to resume, mention ` +
-              `@${config.linearMentionHandle} in a comment on this issue ` +
-              `(or un-delegate and re-delegate it to Maestro).`,
-            cause: null,
-            pr: prOf(session),
-          });
-          yield* Effect.logWarning("TurnSettlement: circuit breaker paused session", {
-            sessionId: args.sessionId,
-            consecutiveFailures: failures,
-          });
+      const maybeTripBreaker = Effect.fn(function* (args: SettleTarget) {
+        const failures = yield* taskRunRepo.countConsecutiveFailures(args.sessionId);
+        if (failures < CONSECUTIVE_FAILURE_LIMIT) return;
+        const { session, newlyPaused } = yield* sessionRepo.pause(args.sessionId);
+        if (!newlyPaused) return;
+        yield* auditRepo.record({
+          actor: "maestro",
+          action: "session-paused",
+          targetEntity: `session:${args.sessionId}`,
+          priorState: session.state,
         });
+        yield* enqueueOutcome({
+          kind: "session-paused",
+          taskRunId: args.taskRunId,
+          sessionId: args.sessionId,
+          ticket: args.ticket,
+          summary:
+            // No leading "Maestro" — formatTurnComment already prefixes the
+            // marker; doubling read as "Maestro — Maestro paused" (FUR-42).
+            `Paused this session after ${CONSECUTIVE_FAILURE_LIMIT} consecutive failures. ` +
+            `New turns will not be triggered; to resume, mention ` +
+            `@${config.linearMentionHandle} in a comment on this issue ` +
+            `(or un-delegate and re-delegate it to Maestro).`,
+          cause: null,
+          pr: prOf(session),
+        });
+        yield* Effect.logWarning("TurnSettlement: circuit breaker paused session", {
+          sessionId: args.sessionId,
+          consecutiveFailures: failures,
+        });
+      });
 
       // WARM_IDLE is where every settled turn leaves its session. Sessions
       // spend the turn WARM_IDLE already in MVP (eviction lands later), so
       // only a DORMANT_SAVED rehydration needs an actual transition.
-      const settleSession = (sessionId: SessionId) =>
-        Effect.gen(function* () {
-          const fresh = yield* sessionRepo.get(sessionId);
-          if (fresh.state === "DORMANT_SAVED") {
-            yield* sessionRepo.transition(sessionId, "WARM_IDLE");
-          }
-          yield* sessionRepo.touchActivity(sessionId);
-        });
+      const settleSession = Effect.fn(function* (sessionId: SessionId) {
+        const fresh = yield* sessionRepo.get(sessionId);
+        if (fresh.state === "DORMANT_SAVED") {
+          yield* sessionRepo.transition(sessionId, "WARM_IDLE");
+        }
+        yield* sessionRepo.touchActivity(sessionId);
+      });
 
       return {
         settleCompleted: Effect.fn("TurnSettlement.settleCompleted")(function* (args) {

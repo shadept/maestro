@@ -128,6 +128,13 @@ export class WorktreeManager extends Context.Service<
 - **Every service method is wrapped in `Effect.fn("ServiceName.method")`** — this is the tracing
   instrumentation (one span per method call, exported via OTLP in M2). No naked
   `Effect.gen` methods on services.
+- **Effectful function definitions use `Effect.fn`, not `(args) => Effect.gen(...)`** — internal
+  helpers use the bare form `Effect.fn(function* (args) {...})`; a `.pipe` chain on the body
+  becomes a trailing transform argument (`Effect.fn(body, Effect.catchTag(...))`). Know what the
+  bare form buys: in the pinned beta it creates **no span** (verified in beta.97 and beta.99 —
+  only the named form does), just stack-frame metadata — which is why service methods keep the
+  named form above. Non-function `Effect.gen` (layer bodies, zero-arg effect consts, inline
+  effects in argument position) stays `Effect.gen`.
 
 ### Errors
 

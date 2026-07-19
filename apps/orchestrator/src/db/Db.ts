@@ -7,21 +7,20 @@ import * as schema from "./schema/index.ts";
 
 export type DrizzleClient = NodePgDatabase<typeof schema>;
 
-const make = (connectionString: string) =>
-  Effect.gen(function* () {
-    const pool = yield* Effect.acquireRelease(
-      Effect.sync(() => new pg.Pool({ connectionString })),
-      (p) => Effect.promise(() => p.end()),
-    );
-    const client = drizzle(pool, { schema });
-    return {
-      client,
-      ping: Effect.tryPromise(() => client.execute(sql`select 1`)).pipe(
-        Effect.as(true),
-        Effect.catch(() => Effect.succeed(false)),
-      ),
-    };
-  });
+const make = Effect.fn(function* (connectionString: string) {
+  const pool = yield* Effect.acquireRelease(
+    Effect.sync(() => new pg.Pool({ connectionString })),
+    (p) => Effect.promise(() => p.end()),
+  );
+  const client = drizzle(pool, { schema });
+  return {
+    client,
+    ping: Effect.tryPromise(() => client.execute(sql`select 1`)).pipe(
+      Effect.as(true),
+      Effect.catch(() => Effect.succeed(false)),
+    ),
+  };
+});
 
 export class Db extends Context.Service<
   Db,

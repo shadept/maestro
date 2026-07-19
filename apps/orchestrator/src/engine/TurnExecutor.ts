@@ -127,8 +127,8 @@ export class TurnExecutor extends Context.Service<
        * Best-effort by design: a failure is logged, the marker survives, and
        * the next replayed job (or the M2 retention fallback) converges.
        */
-      const finalizeTermination = (sessionId: SessionId) =>
-        Effect.gen(function* () {
+      const finalizeTermination = Effect.fn(
+        function* (sessionId: SessionId) {
           const session = yield* sessionRepo.get(sessionId);
           if (session.terminationRequestedAt === null) return;
           const outcome = yield* terminator.terminate({ sessionId });
@@ -136,56 +136,55 @@ export class TurnExecutor extends Context.Service<
             sessionId,
             outcome: outcome._tag,
           });
-        }).pipe(
-          Effect.catch((error) =>
-            Effect.logError("TurnExecutor: deferred session teardown failed", error),
-          ),
-        );
+        },
+        Effect.catch((error) =>
+          Effect.logError("TurnExecutor: deferred session teardown failed", error),
+        ),
+      );
 
       /** Streams worker logs into the TaskRun row AND the agent parser; returns the last Result. */
-      const observeWorker = (args: {
+      const observeWorker = Effect.fn(function* (args: {
         readonly handle: { readonly id: string };
         readonly session: Session;
         readonly taskRunId: TaskRunId;
-      }) =>
-        Effect.gen(function* () {
-          // Local once-guard: the session snapshot is stale after the first
-          // persist, so persistSessionUuid alone would re-write on every
-          // subsequent system event in the same stream.
-          let uuidPersisted = args.session.claudeSessionUuid !== null;
-          const pump = yield* Effect.forkChild(
-            runtime.logs(args.handle).pipe(
-              // The tee is also the SSE log pipeline (FUR-16): every chunk is
-              // persisted AND published live, in arrival order.
-              Stream.tap((chunk) =>
-                taskRunRepo.appendLogs(args.taskRunId, chunk).pipe(
-                  Effect.andThen(
-                    bus.publish(
-                      LogChunk.make({
-                        taskRunId: args.taskRunId,
-                        sessionId: args.session.id,
-                        chunk,
-                      }),
-                    ),
+      }) {
+        // Local once-guard: the session snapshot is stale after the first
+        // persist, so persistSessionUuid alone would re-write on every
+        // subsequent system event in the same stream.
+        let uuidPersisted = args.session.claudeSessionUuid !== null;
+        const pump = yield* Effect.forkChild(
+          runtime.logs(args.handle).pipe(
+            // The tee is also the SSE log pipeline (FUR-16): every chunk is
+            // persisted AND published live, in arrival order.
+            Stream.tap((chunk) =>
+              taskRunRepo.appendLogs(args.taskRunId, chunk).pipe(
+                Effect.andThen(
+                  bus.publish(
+                    LogChunk.make({
+                      taskRunId: args.taskRunId,
+                      sessionId: args.session.id,
+                      chunk,
+                    }),
                   ),
                 ),
               ),
-              agent.parseStream,
-              Stream.tap((event) => {
-                if (event._tag !== "SessionStarted" || uuidPersisted) return Effect.void;
-                uuidPersisted = true;
-                return agent.persistSessionUuid(args.session, event);
-              }),
-              Stream.runFold(
-                () => null as ResultEvent | null,
-                (last, event) => (event._tag === "Result" ? event : last),
-              ),
             ),
-          );
-          const exit = yield* runtime.wait(args.handle);
-          const result = yield* Fiber.join(pump);
-          return { exit, result };
-        });
+            agent.parseStream,
+            Stream.tap((event) => {
+              if (event._tag !== "SessionStarted" || uuidPersisted) return Effect.void;
+              uuidPersisted = true;
+              return agent.persistSessionUuid(args.session, event);
+            }),
+            Stream.runFold(
+              () => null as ResultEvent | null,
+              (last, event) => (event._tag === "Result" ? event : last),
+            ),
+          ),
+        );
+        const exit = yield* runtime.wait(args.handle);
+        const result = yield* Fiber.join(pump);
+        return { exit, result };
+      });
 
       const runTurn = Effect.fn("TurnExecutor.runTurn")(function* (job: TurnJob, session: Session) {
         const project = yield* projectRepo.get(session.projectId);

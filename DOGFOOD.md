@@ -148,13 +148,44 @@ grates, the cheap M2 upgrade is auto-re-minting via client credentials on
 
 ## 3. Tunnel + Linear webhook
 
-The webhook must reach `POST /api/webhooks/linear` on port 3000:
+The webhook must reach `POST /api/webhooks/linear` on port 3000.
+
+**Stable hostname (preferred): Cloudflare named tunnel.** Quick tunnels mint a
+new `trycloudflare.com` host every run, which means re-editing the Linear
+webhook each time. A named tunnel gives a permanent subdomain and works from
+any network (the laptop dials out to Cloudflare). Requires the domain's DNS to
+be served by Cloudflare (free plan). One-time setup:
 
 ```sh
-# cloudflared (no account needed for a quick tunnel):
+cloudflared tunnel login                 # browser auth; pick the domain's zone
+cloudflared tunnel create maestro        # prints a tunnel UUID, writes ~/.cloudflared/<uuid>.json
+cloudflared tunnel route dns maestro maestro-dev.<your-domain>   # adds the CNAME
+```
+
+`~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: maestro
+credentials-file: /Users/<you>/.cloudflared/<uuid>.json
+ingress:
+  - hostname: maestro-dev.<your-domain>
+    service: http://localhost:3000
+  - service: http_status:404
+```
+
+Then every dogfood session is just:
+
+```sh
+cloudflared tunnel run maestro
+```
+
+The subdomain CNAME is additive — records pointing the apex at other
+infrastructure (e.g. a k8s cluster) are untouched.
+
+**Fallback: quick tunnel (random URL each run — webhook must be re-pointed):**
+
+```sh
 cloudflared tunnel --url http://localhost:3000
-# or ngrok:
-ngrok http 3000
 ```
 
 In Linear → Settings → API → Webhooks → New webhook:

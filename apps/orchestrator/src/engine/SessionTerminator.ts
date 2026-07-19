@@ -65,28 +65,26 @@ export class SessionTerminator extends Context.Service<
       // PENDING → FAILED/CANCELLED via the CAS guard: a run that already got
       // dispatched (PROVISIONING) won't match — it is treated as active and
       // deferred to, never cancelled mid-flight (MVP: no mid-turn kill).
-      const cancelQueued = (sessionId: SessionId) =>
-        Effect.gen(function* () {
-          const runs = yield* taskRunRepo.listBySession(sessionId);
-          yield* Effect.forEach(
-            runs.filter((run) => run.state === "PENDING"),
-            (run) =>
-              taskRunRepo.transition(run.id, "FAILED", { cause: "CANCELLED" }).pipe(
-                // lost the race to dispatch — the active-run check picks it up
-                Effect.catchTag("StateTransitionError", () => Effect.void),
-              ),
-            { discard: true },
-          );
-        });
+      const cancelQueued = Effect.fn(function* (sessionId: SessionId) {
+        const runs = yield* taskRunRepo.listBySession(sessionId);
+        yield* Effect.forEach(
+          runs.filter((run) => run.state === "PENDING"),
+          (run) =>
+            taskRunRepo.transition(run.id, "FAILED", { cause: "CANCELLED" }).pipe(
+              // lost the race to dispatch — the active-run check picks it up
+              Effect.catchTag("StateTransitionError", () => Effect.void),
+            ),
+          { discard: true },
+        );
+      });
 
-      const purgeFilesystem = (session: Session) =>
-        Effect.gen(function* () {
-          const project = yield* projectRepo.get(session.projectId);
-          yield* worktreeManager.remove({ session, project });
-          yield* Effect.promise(() =>
-            rm(sessionConfigDir(storageRoot, session.id), { recursive: true, force: true }),
-          );
-        });
+      const purgeFilesystem = Effect.fn(function* (session: Session) {
+        const project = yield* projectRepo.get(session.projectId);
+        yield* worktreeManager.remove({ session, project });
+        yield* Effect.promise(() =>
+          rm(sessionConfigDir(storageRoot, session.id), { recursive: true, force: true }),
+        );
+      });
 
       return {
         terminate: Effect.fn("SessionTerminator.terminate")(function* (args: {

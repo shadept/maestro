@@ -116,23 +116,21 @@ export class IngestPipeline extends Context.Service<
       const queue = yield* TurnQueue;
       const terminator = yield* SessionTerminator;
 
-      const createTurn = (sessionId: SessionId, context: TaskContext) =>
-        Effect.gen(function* () {
-          const taskRun = yield* taskRunRepo.create(sessionId, context);
-          yield* queue.enqueue({ taskRunId: taskRun.id, sessionId });
-          return taskRun;
-        });
+      const createTurn = Effect.fn(function* (sessionId: SessionId, context: TaskContext) {
+        const taskRun = yield* taskRunRepo.create(sessionId, context);
+        yield* queue.enqueue({ taskRunId: taskRun.id, sessionId });
+        return taskRun;
+      });
 
       /** Clears the FUR-39 breaker on an explicit human resume signal. */
-      const resume = (sessionId: SessionId, actor: string) =>
-        Effect.gen(function* () {
-          yield* sessionRepo.resume(sessionId);
-          yield* auditRepo.record({
-            actor,
-            action: "session-resumed",
-            targetEntity: `session:${sessionId}`,
-          });
+      const resume = Effect.fn(function* (sessionId: SessionId, actor: string) {
+        yield* sessionRepo.resume(sessionId);
+        yield* auditRepo.record({
+          actor,
+          action: "session-resumed",
+          targetEntity: `session:${sessionId}`,
         });
+      });
 
       return {
         startTask: Effect.fn("IngestPipeline.startTask")(function* (args) {

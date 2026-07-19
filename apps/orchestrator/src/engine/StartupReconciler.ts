@@ -53,8 +53,8 @@ export class StartupReconciler extends Context.Service<
       const settlement = yield* TurnSettlement;
       const terminator = yield* SessionTerminator;
 
-      const settleOrphan = (run: TaskRun) =>
-        Effect.gen(function* () {
+      const settleOrphan = Effect.fn(
+        function* (run: TaskRun) {
           const session = yield* sessionRepo.get(run.sessionId);
           yield* settlement.settleFailed({
             taskRunId: run.id,
@@ -76,10 +76,10 @@ export class StartupReconciler extends Context.Service<
             sessionId: run.sessionId,
             orphanedIn: run.state,
           });
-        }).pipe(
-          // lost a race with a concurrent settle — the run is already consistent
-          Effect.catchTag("StateTransitionError", () => Effect.void),
-        );
+        },
+        // lost a race with a concurrent settle — the run is already consistent
+        Effect.catchTag("StateTransitionError", () => Effect.void),
+      );
 
       const sweepOrphans = Effect.gen(function* () {
         const active = yield* taskRunRepo.listActive();

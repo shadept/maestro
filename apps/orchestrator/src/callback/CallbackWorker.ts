@@ -60,31 +60,28 @@ export class CallbackWorker extends Context.Service<
         new CallbackDeliveryError({ target: entry.target, reason });
 
       /** Delivers one row; any problem becomes a CallbackDeliveryError for the retry record. */
-      const deliver = (entry: OutboxEntry): Effect.Effect<void, CallbackDeliveryError> =>
-        Effect.gen(function* () {
-          const fail = deliveryError(entry);
-          if (entry.target !== "linear") {
-            // M2's generic API adds its own sender; until then such rows
-            // retry (capped backoff, terminal FAILED after the give-up
-            // threshold) rather than being silently dropped.
-            return yield* fail(`no callback adapter for target "${entry.target}"`);
-          }
-          const outcome = yield* decodeOutcome(entry.payload).pipe(
-            Effect.mapError((error) =>
-              fail(`outbox payload is not a TurnOutcomePayload: ${error}`),
-            ),
-          );
-          // The turn's TaskContext preserves the raw platform payload exactly
-          // for this: it names the Linear issue UUID the comment goes to.
-          const context = yield* taskRunRepo
-            .getContext(outcome.taskRunId)
-            .pipe(Effect.mapError((error) => fail(`loading turn context failed: ${error}`)));
-          const issueId = linearIssueIdFrom(context.payload);
-          if (issueId === null) {
-            return yield* fail("turn context has no Linear issue id");
-          }
-          yield* linear.postComment({ issueId, body: formatTurnComment(outcome) });
-        });
+      const deliver = Effect.fn(function* (entry: OutboxEntry) {
+        const fail = deliveryError(entry);
+        if (entry.target !== "linear") {
+          // M2's generic API adds its own sender; until then such rows
+          // retry (capped backoff, terminal FAILED after the give-up
+          // threshold) rather than being silently dropped.
+          return yield* fail(`no callback adapter for target "${entry.target}"`);
+        }
+        const outcome = yield* decodeOutcome(entry.payload).pipe(
+          Effect.mapError((error) => fail(`outbox payload is not a TurnOutcomePayload: ${error}`)),
+        );
+        // The turn's TaskContext preserves the raw platform payload exactly
+        // for this: it names the Linear issue UUID the comment goes to.
+        const context = yield* taskRunRepo
+          .getContext(outcome.taskRunId)
+          .pipe(Effect.mapError((error) => fail(`loading turn context failed: ${error}`)));
+        const issueId = linearIssueIdFrom(context.payload);
+        if (issueId === null) {
+          return yield* fail("turn context has no Linear issue id");
+        }
+        yield* linear.postComment({ issueId, body: formatTurnComment(outcome) });
+      });
 
       return {
         drainOnce: Effect.fn("CallbackWorker.drainOnce")(function* () {

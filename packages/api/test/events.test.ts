@@ -46,6 +46,7 @@ const taskRun: TaskRun = {
   resultText: null,
   failureSummary: null,
   traceId: null,
+  resources: null,
 };
 
 const encode = Schema.encodeSync(MaestroEventFromJsonString);

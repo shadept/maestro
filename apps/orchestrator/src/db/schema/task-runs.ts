@@ -1,4 +1,4 @@
-import type { TaskContext, TaskRunCause, TaskRunState } from "@maestro/domain";
+import type { ResourceSpec, TaskContext, TaskRunCause, TaskRunState } from "@maestro/domain";
 import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { uuidV7PrimaryKey } from "./columns.ts";
 import { sessions } from "./sessions.ts";
@@ -27,6 +27,8 @@ export const taskRuns = pgTable(
     /** Captured worker stdout/stderr for the turn (append-heavy, read on demand). */
     logOutput: text("log_output"),
     traceId: text("trace_id"),
+    /** Resolved two-tier resource spec (M2.5), pinned right before the worker starts. */
+    resources: jsonb("resources").$type<ResourceSpec>(),
   },
   (table) => [index("task_runs_session_idx").on(table.sessionId)],
 );

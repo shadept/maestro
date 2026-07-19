@@ -3,6 +3,7 @@ import {
   canTaskRunTransition,
   type DbError,
   EntityNotFoundError,
+  type ResourceSpec,
   type SessionId,
   StateTransitionError,
   TaskContext,
@@ -33,6 +34,7 @@ const toTaskRun = (row: typeof taskRuns.$inferSelect): TaskRun =>
     resultText: row.resultText,
     failureSummary: row.failureSummary,
     traceId: row.traceId,
+    resources: row.resources,
   });
 
 const allStates = Object.keys(taskRunTransitions) as ReadonlyArray<TaskRunState>;
@@ -84,6 +86,8 @@ export class TaskRunRepo extends Context.Service<
     readonly appendLogs: (id: TaskRunId, chunk: string) => Effect.Effect<void, DbError>;
     readonly getLogs: (id: TaskRunId) => Effect.Effect<string, DbError>;
     readonly setTraceId: (id: TaskRunId, traceId: string) => Effect.Effect<void, DbError>;
+    /** Pin the two-tier resource spec (M2.5) right before the worker starts. */
+    readonly setResources: (id: TaskRunId, resources: ResourceSpec) => Effect.Effect<void, DbError>;
   }
 >()("maestro/db/TaskRunRepo") {
   static readonly layer = Layer.effect(
@@ -228,6 +232,21 @@ export class TaskRunRepo extends Context.Service<
             client
               .update(taskRuns)
               .set({ traceId })
+              .where(eq(taskRuns.id, id))
+              .returning({ id: taskRuns.id }),
+          );
+          if (!rows[0]) {
+            return yield* new EntityNotFoundError({ entity: "TaskRun", entityId: id });
+          }
+        }),
+        setResources: Effect.fn("TaskRunRepo.setResources")(function* (
+          id: TaskRunId,
+          resources: ResourceSpec,
+        ) {
+          const rows = yield* dbTry("TaskRunRepo.setResources")(() =>
+            client
+              .update(taskRuns)
+              .set({ resources })
               .where(eq(taskRuns.id, id))
               .returning({ id: taskRuns.id }),
           );

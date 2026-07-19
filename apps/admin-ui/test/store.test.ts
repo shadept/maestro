@@ -49,6 +49,7 @@ const taskRun = (overrides: Record<string, unknown> = {}): TaskRun =>
     resultText: null,
     failureSummary: null,
     traceId: null,
+    resources: null,
     ...overrides,
   });
 

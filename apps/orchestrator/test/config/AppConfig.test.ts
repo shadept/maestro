@@ -27,6 +27,8 @@ describe("AppConfig", () => {
     expect(config.storageRoot).toBe("/var/lib/maestro");
     expect(config.runtimeTemplate).toBe("docker run");
     expect(config.maxConcurrentWorkers).toBe(2);
+    expect(config.agentTierMemoryMib).toBe(1024);
+    expect(config.agentTierCpuMillicores).toBe(1000);
     expect(config.cooldownMinutes).toBe(60);
     expect(config.retentionDays).toBe(14);
     expect(Redacted.value(config.adminToken)).toBe("secret-token");
@@ -42,6 +44,8 @@ describe("AppConfig", () => {
     const config = await load({
       ...validEnv,
       MAESTRO_MAX_CONCURRENT_WORKERS: "5",
+      MAESTRO_AGENT_TIER_MEMORY_MIB: "2048",
+      MAESTRO_AGENT_TIER_CPU_MILLICORES: "2000",
       MAESTRO_LOG_FORMAT: "pretty",
       MAESTRO_PORT: "8080",
       CLAUDE_CODE_OAUTH_TOKEN: "oauth-token",
@@ -50,6 +54,8 @@ describe("AppConfig", () => {
       MAESTRO_GIT_AUTHOR_EMAIL: "bot@example.com",
     });
     expect(config.maxConcurrentWorkers).toBe(5);
+    expect(config.agentTierMemoryMib).toBe(2048);
+    expect(config.agentTierCpuMillicores).toBe(2000);
     expect(config.logFormat).toBe("pretty");
     expect(config.port).toBe(8080);
     expect(Option.map(config.agentOauthToken, Redacted.value)).toEqual(Option.some("oauth-token"));

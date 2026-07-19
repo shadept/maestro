@@ -62,6 +62,24 @@ describe("Project", () => {
       Schema.decodeUnknownSync(Project)({ ...valid, resources: { burstMultiplier: 1 } }),
     ).toThrow();
   });
+
+  it("rejects a non-positive cpu baseline (M2.5)", () => {
+    expect(() =>
+      Schema.decodeUnknownSync(Project)({ ...valid, resources: { cpuBaselineMillicores: 0 } }),
+    ).toThrow();
+  });
+
+  it("round-trips a cpu baseline (M2.5)", () => {
+    const project = roundTrip(Project, {
+      ...valid,
+      resources: { memoryBaselineMib: 2048, cpuBaselineMillicores: 500, burstMultiplier: 3 },
+    });
+    expect(project.resources).toEqual({
+      memoryBaselineMib: 2048,
+      cpuBaselineMillicores: 500,
+      burstMultiplier: 3,
+    });
+  });
 });
 
 describe("Session", () => {
@@ -148,11 +166,24 @@ describe("TaskRun", () => {
     resultText: null,
     failureSummary: null,
     traceId: null,
+    resources: null,
   };
 
   it("round-trips", () => {
     const run = roundTrip(TaskRun, valid);
     expect(run.state).toBe("PENDING");
+  });
+
+  it("round-trips a pinned resource spec (M2.5)", () => {
+    const run = roundTrip(TaskRun, {
+      ...valid,
+      resources: { memoryRequestMib: 2048, memoryLimitMib: 4096, cpuRequestMillicores: 1500 },
+    });
+    expect(run.resources).toEqual({
+      memoryRequestMib: 2048,
+      memoryLimitMib: 4096,
+      cpuRequestMillicores: 1500,
+    });
   });
 
   it("round-trips a failed run with cause, deadlines, and failure summary", () => {

@@ -13,6 +13,10 @@
 #   MODE=ARGS     -> write the full argv (one arg per line) to agent-argv.txt
 #                    in the worktree, then succeed without committing — lets
 #                    tests observe the exact worker command (FUR-41)
+#   MODE=OOM      -> balloon memory (exponential string doubling) until the
+#                    container's cgroup OOM killer strikes — exercises the
+#                    WorkerRuntime exit-137 OOM classification against a real
+#                    memory-limited container (M2.5)
 set -e
 
 PROMPT="$2"
@@ -43,6 +47,10 @@ case "$PROMPT" in
     printf '%s\n' "$@" > agent-argv.txt
     printf '%s\n' "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Recorded argv.\",\"session_id\":\"$SESSION_UUID\"}"
     exit 0
+    ;;
+  *MODE=OOM*)
+    x=a
+    while true; do x="$x$x"; done
     ;;
 esac
 

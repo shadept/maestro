@@ -332,6 +332,29 @@ describe("TaskRunRepo", () => {
     expect(fetched.traceId).toBe("abcdef0123456789abcdef0123456789");
   });
 
+  it("setResources persists and surfaces on get (M2.5)", async () => {
+    const project = await run(makeProject);
+    const session = await run(makeSession(project));
+    const created = await run(makeRun(session));
+    expect(created.resources).toBeNull();
+
+    const spec = { memoryRequestMib: 1536, memoryLimitMib: 3072, cpuRequestMillicores: 1500 };
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* TaskRunRepo;
+        yield* repo.setResources(created.id, spec);
+      }),
+    );
+
+    const fetched = await run(
+      Effect.gen(function* () {
+        const repo = yield* TaskRunRepo;
+        return yield* repo.get(created.id);
+      }),
+    );
+    expect(fetched.resources).toEqual(spec);
+  });
+
   it("records failure cause + summary atomically with the transition and publishes them", async () => {
     const project = await run(makeProject);
     const session = await run(makeSession(project));

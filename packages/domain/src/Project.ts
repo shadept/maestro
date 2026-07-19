@@ -16,9 +16,14 @@ export const GitConventionOverrides = Schema.Struct({
 export type GitConventionOverrides = typeof GitConventionOverrides.Type;
 
 // Project tier of the two-tier resource model (agent tier is orchestrator
-// config). Absent key = orchestrator default.
+// config, see AgentResourceTier in ResourceSpec.ts). Absent key = orchestrator
+// default. CPU carries a request only — Tech Requirements §8 mandates soft
+// CPU limits, so there is no CPU counterpart to burstMultiplier.
 export const ResourceTiers = Schema.Struct({
   memoryBaselineMib: Schema.optionalKey(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
+  ),
+  cpuBaselineMillicores: Schema.optionalKey(
     Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
   ),
   burstMultiplier: Schema.optionalKey(Schema.Number.check(Schema.isGreaterThan(1))),

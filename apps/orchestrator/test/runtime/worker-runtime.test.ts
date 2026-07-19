@@ -77,6 +77,25 @@ describe("WorkerRuntime.layerLocalCli (docker)", () => {
     expect(exit.cause).toBeNull();
   });
 
+  it("resource spec renders as docker memory/cpu flags without breaking the run (M2.5)", async () => {
+    const exit = await run(
+      Effect.gen(function* () {
+        const runtime = yield* WorkerRuntime;
+        const handle = yield* runtime.start(
+          spec({
+            command: ["sh", "-c", "echo ok"],
+            memoryRequestMib: 128,
+            memoryLimitMib: 256,
+            cpuRequestMillicores: 500,
+          }),
+        );
+        return yield* runtime.wait(handle);
+      }),
+    );
+    expect(exit.exitCode).toBe(0);
+    expect(exit.cause).toBeNull();
+  });
+
   it("timeout kills the worker and classifies the cause", async () => {
     const exit = await run(
       Effect.gen(function* () {

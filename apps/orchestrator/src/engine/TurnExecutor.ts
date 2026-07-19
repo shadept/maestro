@@ -1,14 +1,15 @@
 import { mkdir } from "node:fs/promises";
 import { LogChunk } from "@maestro/api";
-import type {
-  DbError,
-  ForgeError,
-  GitError,
-  RuntimeError,
-  Session,
-  SessionId,
-  TaskRunCause,
-  TaskRunId,
+import {
+  computeResourceSpec,
+  type DbError,
+  type ForgeError,
+  type GitError,
+  type RuntimeError,
+  type Session,
+  type SessionId,
+  type TaskRunCause,
+  type TaskRunId,
 } from "@maestro/domain";
 import { Context, Duration, Effect, Fiber, Layer, Metric, Stream } from "effect";
 import { AgentContract, type AgentEvent, extractPrProposal } from "../agent/AgentContract.ts";
@@ -246,7 +247,18 @@ export class TurnExecutor extends Context.Service<
           expiresAt: new Date(Date.now() + timeoutMillis),
         });
 
-        const memoryMib = project.resources.memoryBaselineMib;
+        // Two-tier resource model (M2.5): agent tier (deployment default) +
+        // project tier compose into the Burstable spec, pinned on the
+        // TaskRun (like traceId) so a settled run — especially an OOM
+        // failure — always shows what its container was actually built with.
+        const resources = computeResourceSpec(
+          {
+            memoryBaselineMib: config.agentTierMemoryMib,
+            cpuBaselineMillicores: config.agentTierCpuMillicores,
+          },
+          project.resources,
+        );
+        yield* taskRunRepo.setResources(job.taskRunId, resources);
         const handle = yield* runtime.start({
           name: turnWorkerName(job.taskRunId),
           image: config.workerImage,
@@ -254,7 +266,9 @@ export class TurnExecutor extends Context.Service<
           env: command.env,
           mounts: identityMounts({ ...paths, configDir }),
           workdir: paths.worktreePath,
-          ...(memoryMib !== undefined && { memoryMib }),
+          memoryRequestMib: resources.memoryRequestMib,
+          memoryLimitMib: resources.memoryLimitMib,
+          cpuRequestMillicores: resources.cpuRequestMillicores,
           timeoutMillis,
         });
 

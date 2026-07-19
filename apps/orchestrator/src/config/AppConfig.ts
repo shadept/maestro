@@ -25,6 +25,16 @@ const config = {
     Config.withDefault("local-cli" as const),
   ),
   maxConcurrentWorkers: Config.int("MAESTRO_MAX_CONCURRENT_WORKERS").pipe(Config.withDefault(2)),
+  /**
+   * Agent tier of the two-tier resource model (Tech Requirements §8, M2.5):
+   * the baseline every worker gets regardless of Project, before any
+   * per-Project override (Project.resources) composes on top. ~1Gi default.
+   */
+  agentTierMemoryMib: Config.int("MAESTRO_AGENT_TIER_MEMORY_MIB").pipe(Config.withDefault(1024)),
+  /** Agent tier CPU baseline, millicores — a request only, never hard-capped. */
+  agentTierCpuMillicores: Config.int("MAESTRO_AGENT_TIER_CPU_MILLICORES").pipe(
+    Config.withDefault(1000),
+  ),
   /** Worker image every turn runs in — the official base image (images/base, FUR-34). */
   workerImage: Config.nonEmptyString("MAESTRO_WORKER_IMAGE").pipe(
     Config.withDefault("ghcr.io/shadept/maestro-worker-base:latest"),
@@ -139,6 +149,8 @@ export class AppConfig extends Context.Service<
     readonly runtimeTemplate: string;
     readonly runtimeMode: "local-cli" | "k8s";
     readonly maxConcurrentWorkers: number;
+    readonly agentTierMemoryMib: number;
+    readonly agentTierCpuMillicores: number;
     readonly workerImage: string;
     readonly turnTimeoutSeconds: number;
     readonly cooldownMinutes: number;
@@ -175,6 +187,8 @@ export class AppConfig extends Context.Service<
       runtimeTemplate: "docker run",
       runtimeMode: "local-cli",
       maxConcurrentWorkers: 2,
+      agentTierMemoryMib: 1024,
+      agentTierCpuMillicores: 1000,
       workerImage: "ghcr.io/shadept/maestro-worker-base:latest",
       turnTimeoutSeconds: 1800,
       cooldownMinutes: 60,

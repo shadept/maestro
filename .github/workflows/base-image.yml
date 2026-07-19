@@ -1,0 +1,92 @@
+name: Base image
+
+# Builds images/base, proves it can dogfood Maestro itself (pnpm install +
+# pnpm test running INSIDE the image, against Maestro's own repo), and
+# publishes to GHCR on main. See images/base/README.md for the versioning
+# policy and the per-project extension pattern.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "images/base/**"
+      - ".github/workflows/base-image.yml"
+  pull_request:
+    paths:
+      - "images/base/**"
+      - ".github/workflows/base-image.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/maestro-worker-base
+
+jobs:
+  build-and-dogfood:
+    runs-on: ubuntu-latest
+    outputs:
+      claude_code_version: ${{ steps.version.outputs.claude_code_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read pinned claude-code version
+        id: version
+        run: |
+          version=$(grep -oP '(?<=^ARG CLAUDE_CODE_VERSION=).+' images/base/Dockerfile)
+          echo "claude_code_version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: docker build -t "${IMAGE}:ci" images/base
+
+      - name: Report image size
+        run: docker images "${IMAGE}:ci" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+
+      # Dogfood (M2.14 acceptance): the base image must be able to develop
+      # Maestro itself. Docker-outside-of-docker so vitest's testcontainers
+      # suites (real Postgres, no mocks — CLAUDE.md "Testing") can spin up
+      # sibling containers on the runner's own docker daemon:
+      #   --network host   so testcontainers' "localhost:<mapped-port>"
+      #                    resolves to the runner, not this container's own
+      #                    loopback (the standard DooD fix).
+      #   -u 0             GITHUB_WORKSPACE is checked out as the runner
+      #                    user (not uid 1000/"node" baked into the image),
+      #                    so `pnpm install` needs root to write into it here.
+      #                    Real turns still run as the non-root `node` user —
+      #                    this only relaxes the CI proof step, which is
+      #                    about toolchain completeness, not the
+      #                    root-refusal security property (verified live,
+      #                    see PROGRESS.md FUR-20 FIX entry).
+      - name: Dogfood — pnpm install && pnpm test inside the image
+        run: |
+          docker run --rm \
+            --network host \
+            -u 0 \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${GITHUB_WORKSPACE}:/workspace" \
+            -w /workspace \
+            "${IMAGE}:ci" \
+            bash -lc "pnpm install --frozen-lockfile && pnpm test"
+
+  publish:
+    needs: build-and-dogfood
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        env:
+          VERSION: ${{ needs.build-and-dogfood.outputs.claude_code_version }}
+        run: |
+          docker build -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" images/base
+          docker push "${IMAGE}:${VERSION}"
+          docker push "${IMAGE}:latest"

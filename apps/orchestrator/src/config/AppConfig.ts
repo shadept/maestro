@@ -25,9 +25,9 @@ const config = {
     Config.withDefault("local-cli" as const),
   ),
   maxConcurrentWorkers: Config.int("MAESTRO_MAX_CONCURRENT_WORKERS").pipe(Config.withDefault(2)),
-  /** Worker image every turn runs in (the official base image lands in M2.14). */
+  /** Worker image every turn runs in — the official base image (images/base, FUR-34). */
   workerImage: Config.nonEmptyString("MAESTRO_WORKER_IMAGE").pipe(
-    Config.withDefault("maestro/worker-base:latest"),
+    Config.withDefault("ghcr.io/shadept/maestro-worker-base:latest"),
   ),
   /** Hard per-turn execution deadline, enforced by WorkerRuntime. */
   turnTimeoutSeconds: Config.int("MAESTRO_TURN_TIMEOUT_SECONDS").pipe(Config.withDefault(1800)),
@@ -175,7 +175,7 @@ export class AppConfig extends Context.Service<
       runtimeTemplate: "docker run",
       runtimeMode: "local-cli",
       maxConcurrentWorkers: 2,
-      workerImage: "maestro/worker-base:latest",
+      workerImage: "ghcr.io/shadept/maestro-worker-base:latest",
       turnTimeoutSeconds: 1800,
       cooldownMinutes: 60,
       retentionDays: 14,

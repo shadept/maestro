@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@effect/platform-node": "4.0.0-beta.97",
+    "@kubernetes/client-node": "^1.4.0",
     "@linear/sdk": "^88.1.0",
     "@maestro/api": "workspace:*",
     "@maestro/domain": "workspace:*",

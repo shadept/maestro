@@ -10,10 +10,7 @@ const localLayer = WorkerRuntime.layerLocalCli.pipe(
   Layer.orDie,
 );
 
-const k8sByConfig = WorkerRuntime.layerFromConfig.pipe(
-  Layer.provide(AppConfig.layerTest({ runtimeMode: "k8s" })),
-  Layer.orDie,
-);
+const k8sNoop = WorkerRuntime.layerK8sNoop;
 
 const run = <A, E>(effect: Effect.Effect<A, E, WorkerRuntime>): Promise<A> =>
   Effect.runPromise(Effect.provide(effect, localLayer));
@@ -225,13 +222,19 @@ describe("WorkerRuntime.layerLocalCli (docker)", () => {
   });
 });
 
-describe("WorkerRuntime.layerK8sNoop via config", () => {
-  it("config runtimeMode=k8s selects the no-op layer; methods fail NotImplementedError", async () => {
+// layerFromConfig's runtimeMode=k8s branch now selects the real layerK8s
+// (M2.11) — its behavior is covered by test/runtime/k8s-runtime.test.ts
+// against a real cluster (gated on MAESTRO_K8S_INTEGRATION_TESTS). This
+// suite just proves the standalone no-op still compiles the full interface
+// and fails every method loudly, for callers that want a runtime guaranteed
+// never to touch a cluster.
+describe("WorkerRuntime.layerK8sNoop", () => {
+  it("every method fails NotImplementedError", async () => {
     const exit = await Effect.runPromiseExit(
       Effect.gen(function* () {
         const runtime = yield* WorkerRuntime;
         return yield* runtime.start(spec({}));
-      }).pipe(Effect.provide(k8sByConfig)),
+      }).pipe(Effect.provide(k8sNoop)),
     );
     expect(Exit.isFailure(exit)).toBe(true);
     if (Exit.isFailure(exit)) {

@@ -1,0 +1,53 @@
+name: K8s Runtime
+
+# WorkerRuntime.layerK8s (FUR-31, M2.11) integration suite: runs the real K8s
+# runtime against an ephemeral kind cluster, separate from the host `ci` job
+# so a cluster-provisioning hiccup never blocks the fast local-cli/unit gates.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  k8s-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: maestro-ci
+
+      - name: Provision the test namespace + storage PVC
+        run: |
+          kubectl create namespace maestro-test
+          cat <<'EOF' | kubectl apply -n maestro-test -f -
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: maestro-storage
+          spec:
+            accessModes: ["ReadWriteOnce"]
+            resources:
+              requests:
+                storage: 1Gi
+          EOF
+
+      - run: pnpm install --frozen-lockfile
+      - name: Run the K8s runtime integration suite
+        run: pnpm --filter @maestro/orchestrator test -- test/runtime/k8s-runtime.test.ts
+        env:
+          MAESTRO_K8S_INTEGRATION_TESTS: "true"
+          MAESTRO_K8S_NAMESPACE: maestro-test
+          MAESTRO_K8S_STORAGE_CLAIM_NAME: maestro-storage
+
+      - name: Dump pod state on failure
+        if: failure()
+        run: |
+          kubectl get pods -n maestro-test -o wide
+          kubectl describe pods -n maestro-test

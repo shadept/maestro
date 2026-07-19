@@ -105,6 +105,22 @@ describe("event store", () => {
       expect(store.queueDepth(SID_B)).toBe(0);
     }));
 
+  it("hands each task-run change to a registered listener with its prior row", () =>
+    withStore((store) => {
+      const seen: Array<{ prev: string | undefined; next: string }> = [];
+      store.setRunListener((prev, next) => seen.push({ prev: prev?.state, next: next.state }));
+
+      store.apply(runChanged(taskRun())); // first-seen (snapshot): no prior
+      store.apply(runChanged(taskRun({ state: "EXECUTING" })));
+      store.apply(runChanged(taskRun({ state: "COMPLETED" })));
+
+      expect(seen).toEqual([
+        { prev: undefined, next: "PENDING" },
+        { prev: "PENDING", next: "EXECUTING" },
+        { prev: "EXECUTING", next: "COMPLETED" },
+      ]);
+    }));
+
   it("appends log chunks in order and rebases onto historical fetches", () =>
     withStore((store) => {
       const log = createMemo(() => store.logFor(RID_1));

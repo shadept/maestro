@@ -89,6 +89,28 @@ main {
   color: var(--text);
 }
 
+/* Notification opt-in toggle. margin-left:auto right-aligns it (and the
+   logout button that follows) as one group. */
+.status-bar .notify-toggle {
+  margin-left: auto;
+  padding: 1px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.status-bar .notify-toggle:hover {
+  color: var(--text);
+}
+
+.status-bar .notify-toggle[aria-pressed="true"] {
+  color: var(--text);
+  border-color: var(--text);
+}
+
 /* chips */
 .chip {
   display: inline-block;

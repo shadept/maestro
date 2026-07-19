@@ -35,14 +35,27 @@ export const createEventStore = () => {
   /** Non-null while the SSE supervisor is waiting out a reconnect backoff. */
   const [retry, setRetry] = createSignal<RetryState | null>(null);
 
+  // Optional observer of task-run changes, given the prior row + the new one.
+  // Keeps side-effecting consumers (e.g. browser notifications) out of the
+  // store: it stays a pure reducer and hands the transition to whoever cares.
+  let runListener: ((previous: TaskRun | undefined, next: TaskRun) => void) | undefined;
+  const setRunListener = (
+    listener: (previous: TaskRun | undefined, next: TaskRun) => void,
+  ): void => {
+    runListener = listener;
+  };
+
   const apply = (event: MaestroEvent): void => {
     switch (event._tag) {
       case "SessionStateChanged":
         setSessions((map) => upsert(map, event.session.id, event.session));
         return;
-      case "TaskRunStateChanged":
+      case "TaskRunStateChanged": {
+        const previous = runs().get(event.taskRun.id);
         setRuns((map) => upsert(map, event.taskRun.id, event.taskRun));
+        runListener?.(previous, event.taskRun);
         return;
+      }
       case "QueueChanged":
         setActiveTurns(event.activeCount);
         return;
@@ -105,6 +118,7 @@ export const createEventStore = () => {
 
   return {
     apply,
+    setRunListener,
     resetForSnapshot,
     rebaseLogs,
     setConnection,

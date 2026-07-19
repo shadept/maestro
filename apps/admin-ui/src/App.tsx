@@ -1,5 +1,6 @@
 import { createSignal, onCleanup, Show } from "solid-js";
 import { type AdminClient, createAdminClient } from "./api.ts";
+import { createNotifier } from "./notifications.ts";
 import { useRoute } from "./route.ts";
 import { connectEvents } from "./sse.ts";
 import { createEventStore } from "./store.ts";
@@ -15,6 +16,10 @@ import { TokenGate } from "./views/TokenGate.tsx";
 
 export const App = () => {
   const store = createEventStore();
+  // Optional browser notifications on turn start/completion — the notifier
+  // opts in via localStorage and rides the store's run-change transitions.
+  const notifier = createNotifier(store);
+  store.setRunListener(notifier.handleRunChange);
   // FUR-17 kept the token in this signal only, never persisted. Explicitly
   // overridden by user request: the token now round-trips through
   // localStorage (token-storage.ts) so refreshes and dev reloads auto-login.
@@ -74,7 +79,7 @@ export const App = () => {
     >
       {(admin) => (
         <div class="app">
-          <StatusBar store={store} onLogout={() => logout()} />
+          <StatusBar store={store} notifier={notifier} onLogout={() => logout()} />
           <main>
             <Show
               when={route().view === "session" ? route() : null}

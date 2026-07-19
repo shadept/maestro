@@ -14,6 +14,7 @@ import path from "node:path";
 import {
   type AgentOverrides,
   ForgeApiError,
+  type ResourceTiers,
   type TaskContext,
   type TaskRun,
   type TaskRunState,
@@ -98,6 +99,7 @@ const git = (cwd: string, ...args: string[]): string =>
 const makeLayer = (
   turnTimeoutSeconds: number,
   forge: { readonly calls?: ForgeCall[]; readonly failWith?: ForgeApiError } = {},
+  configOverrides: Partial<AppConfig["Service"]> = {},
 ): Layer.Layer<Services> => {
   const repos = Layer.mergeAll(
     ProjectRepo.layer,
@@ -139,6 +141,7 @@ const makeLayer = (
         // a file:// origin ignores credentials, but they must be OFFERED to
         // the clone (asserted via the git shim) and must never persist
         githubToken: Option.some(Redacted.make(ORCHESTRATOR_TOKEN)),
+        ...configOverrides,
       }),
     ),
     Layer.orDie,
@@ -162,12 +165,21 @@ const taskContext = (ticketKey: string, body: string): TaskContext => ({
 });
 
 /** Creates project + session + PENDING TaskRun carrying the given body. */
-const setupTurn = (ticketKey: string, body: string, agent: AgentOverrides = {}) =>
+const setupTurn = (
+  ticketKey: string,
+  body: string,
+  agent: AgentOverrides = {},
+  resources: ResourceTiers = {},
+) =>
   Effect.gen(function* () {
     const projectRepo = yield* ProjectRepo;
     const sessionRepo = yield* SessionRepo;
     const taskRunRepo = yield* TaskRunRepo;
-    const project = yield* projectRepo.create({ repoGitUrl: `file://${originDir}`, agent });
+    const project = yield* projectRepo.create({
+      repoGitUrl: `file://${originDir}`,
+      agent,
+      resources,
+    });
     const session = yield* sessionRepo.create({
       projectId: project.id,
       ticketReference: { source: "linear", externalId: ticketKey },
@@ -586,6 +598,48 @@ describe("TurnExecutor", () => {
     expect(settled.outbox).toHaveLength(1);
     const payload = settled.outbox[0]?.payload as TurnOutcomePayload;
     expect(payload.cause).toBe("TIMEOUT");
+  }, 60_000);
+
+  it("memory-hog agent: container OOM-killed, FAILED with cause=OOM (M2.5)", async () => {
+    // Tiny two-tier spec: agent tier 16Mi + project baseline 16Mi request,
+    // default 2× multiplier -> 64Mi hard limit — enough for alpine/git + ash
+    // to boot, small enough for MODE=OOM's memory bomb to blow through fast.
+    const tinyLayer = makeLayer(60, {}, { agentTierMemoryMib: 16 });
+    const runTiny = <A, E>(effect: Effect.Effect<A, E, Services | Scope.Scope>): Promise<A> =>
+      Effect.runPromise(effect.pipe(Effect.scoped, Effect.provide(tinyLayer)));
+
+    const { session, taskRun } = await runTiny(
+      setupTurn("FUR-110", "MODE=OOM", {}, { memoryBaselineMib: 16 }),
+    );
+
+    await runTiny(
+      Effect.gen(function* () {
+        const executor = yield* TurnExecutor;
+        yield* executor.execute({ taskRunId: taskRun.id, sessionId: session.id });
+      }),
+    );
+
+    const settled = await runTiny(
+      Effect.gen(function* () {
+        const taskRunRepo = yield* TaskRunRepo;
+        return {
+          taskRun: yield* taskRunRepo.get(taskRun.id),
+          outbox: yield* outboxEntryFor(taskRun),
+        };
+      }),
+    );
+
+    expect(settled.taskRun.state).toBe("FAILED");
+    expect(settled.taskRun.cause).toBe("OOM");
+    // the pinned spec (M2.5) is what the container actually ran with
+    expect(settled.taskRun.resources).toEqual({
+      memoryRequestMib: 32,
+      memoryLimitMib: 64,
+      cpuRequestMillicores: 1000,
+    });
+    expect(settled.outbox).toHaveLength(1);
+    const payload = settled.outbox[0]?.payload as TurnOutcomePayload;
+    expect(payload.cause).toBe("OOM");
   }, 60_000);
 
   it("origin unreachable on a later turn: base fetch degrades to a warning, agent still executes", async () => {

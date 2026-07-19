@@ -1,7 +1,7 @@
 import type { SessionId, TaskRun } from "@maestro/domain";
 import { createResource, createSignal, For, Show } from "solid-js";
 import type { AdminClient } from "../api.ts";
-import { shortId, timestamp } from "../format.ts";
+import { resourceSummary, shortId, timestamp } from "../format.ts";
 import type { EventStore } from "../store.ts";
 import { LogTail } from "./LogTail.tsx";
 
@@ -171,6 +171,11 @@ const TaskRunRow = (props: {
       {/* The WHY of a FAILED run, always visible — no expanding, no Postgres. */}
       <Show when={props.run.state === "FAILED" && props.run.failureSummary}>
         {(summary) => <FailureSummary text={summary()} />}
+      </Show>
+      {/* Configured tiers next to the failure (M2.5) — pinned on the run, so
+          this is what the container actually had, not today's Project config. */}
+      <Show when={props.run.state === "FAILED" && props.run.resources}>
+        {(resources) => <p class="muted">{resourceSummary(resources())}</p>}
       </Show>
       <Show when={expanded()}>
         <div class="run-body">

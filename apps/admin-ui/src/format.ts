@@ -2,6 +2,14 @@
 
 export const shortId = (id: string): string => id.slice(0, 8);
 
+/** e.g. "1536 MiB request / 3072 MiB limit · 1500m cpu" (M2.5 resource tiers). */
+export const resourceSummary = (r: {
+  readonly memoryRequestMib: number;
+  readonly memoryLimitMib: number;
+  readonly cpuRequestMillicores: number;
+}): string =>
+  `${r.memoryRequestMib} MiB request / ${r.memoryLimitMib} MiB limit · ${r.cpuRequestMillicores}m cpu`;
+
 export const timestamp = (date: Date): string => date.toISOString().replace("T", " ").slice(0, 19);
 
 export const relativeTime = (date: Date, now: Date = new Date()): string => {

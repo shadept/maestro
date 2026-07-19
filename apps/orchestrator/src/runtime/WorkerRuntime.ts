@@ -24,10 +24,26 @@ export interface WorkerSpec {
   readonly env: Readonly<Record<string, string>>;
   readonly mounts: ReadonlyArray<WorkerMount>;
   readonly workdir?: string;
-  /** Two-tier resource placeholder (M2.5 computes it); --memory flag when set. */
-  readonly memoryMib?: number;
+  /**
+   * Two-tier resource spec (M2.5, Tech Requirements §8): request renders as
+   * docker's soft `--memory-reservation`, limit as the hard `--memory` (the
+   * cap whose breach triggers the OOM kill classified below). CPU is a
+   * request only — soft (`--cpu-shares`), never hard-capped.
+   */
+  readonly memoryRequestMib?: number;
+  readonly memoryLimitMib?: number;
+  readonly cpuRequestMillicores?: number;
   readonly timeoutMillis: number;
 }
+
+/**
+ * Docker's `--cpu-shares` is a relative weight, not an absolute quantity —
+ * 1024 is the daemon's own default and conventionally represents "one CPU's
+ * worth" of weight, so millicores convert on that same 1000m == 1024 scale.
+ * The engine floors shares at 2 (its documented minimum).
+ */
+const dockerCpuShares = (cpuRequestMillicores: number): number =>
+  Math.max(2, Math.round((cpuRequestMillicores / 1000) * 1024));
 
 /**
  * Handle id = the container name (WorkerSpec.name). Deterministic on purpose:
@@ -111,7 +127,11 @@ export class WorkerRuntime extends Context.Service<
         // keeping secrets out of argv and process lists
         ...Object.keys(spec.env).flatMap((k) => ["-e", k]),
         ...(spec.workdir ? ["-w", spec.workdir] : []),
-        ...(spec.memoryMib ? ["--memory", `${spec.memoryMib}m`] : []),
+        ...(spec.memoryRequestMib ? ["--memory-reservation", `${spec.memoryRequestMib}m`] : []),
+        ...(spec.memoryLimitMib ? ["--memory", `${spec.memoryLimitMib}m`] : []),
+        ...(spec.cpuRequestMillicores
+          ? ["--cpu-shares", `${dockerCpuShares(spec.cpuRequestMillicores)}`]
+          : []),
         spec.image,
         ...spec.command,
       ];

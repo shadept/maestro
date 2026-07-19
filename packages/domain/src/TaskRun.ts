@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 import { SessionId, TaskRunId } from "./ids.ts";
+import { ResourceSpec } from "./ResourceSpec.ts";
 
 // TaskRun state machine (PRD §5.2). One TaskRun = one turn = a single pass.
 // FAILED and COMPLETED are terminal: retry is an explicit new resume turn
@@ -54,5 +55,13 @@ export const TaskRun = Schema.Struct({
   failureSummary: Schema.NullOr(Schema.String),
   /** Root span trace id (M2.10), persisted as soon as the turn's handler starts. */
   traceId: Schema.NullOr(Schema.String),
+  /**
+   * Resolved two-tier resource spec (M2.5), persisted right before the worker
+   * starts — like a pin, not a live read of Project config, so a settled run
+   * (and an OOM failure in particular) shows exactly what its container was
+   * constrained to even if Project.resources changes later. Null until
+   * EXECUTING.
+   */
+  resources: Schema.NullOr(ResourceSpec),
 });
 export type TaskRun = typeof TaskRun.Type;
